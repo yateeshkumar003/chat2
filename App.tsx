@@ -13,16 +13,30 @@ const App: React.FC = () => {
   });
 
   useEffect(() => {
+    // Initial session check
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
     });
 
+    // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
 
-    return () => subscription.unsubscribe();
+    // CRITICAL: Force logout on visibility change (lock screen, tab switch, minimize)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        supabase.auth.signOut();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
