@@ -1,0 +1,8 @@
+{
+  "name": "Shoe & Socks Chat",
+  "description": "A secure, mobile-first one-to-one real-time chat application with text, emoji, image, and audio messaging.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
