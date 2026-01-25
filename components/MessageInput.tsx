@@ -11,7 +11,7 @@ interface MessageInputProps {
   disabled?: boolean;
   theme: Theme;
   channel?: any;
-  onTypingStatus: (status: 'typing' | 'stopped_typing') => void;
+  onTypingStatus: (status: 'typing' | 'stop_typing') => void;
   onMessageSent: (msg: Message) => void;
   onMessageConfirmed: (tempId: string, confirmedMsg: Message) => void;
 }
@@ -57,7 +57,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      onTypingStatus('stopped_typing');
+      onTypingStatus('stop_typing');
       lastTypingTimeRef.current = 0;
     }, 2000);
   };
@@ -67,18 +67,18 @@ const MessageInput: React.FC<MessageInputProps> = ({
     const finalMsg = content.text?.trim();
     if (!finalMsg && !content.imageUrl && !content.audioUrl) return;
 
-    // Reset typing status immediately
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    onTypingStatus('stopped_typing');
+    onTypingStatus('stop_typing');
     lastTypingTimeRef.current = 0;
 
-    const messageId = crypto.randomUUID();
+    // Use Numeric string for BigInt safety
+    const messageId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
     const now = new Date().toISOString();
     
     const messagePayload: Message = {
       id: messageId,
-      sender_email: senderEmail.toLowerCase(),
-      receiver_email: receiverEmail.toLowerCase(),
+      sender_email: senderEmail.toLowerCase().trim(),
+      receiver_email: receiverEmail.toLowerCase().trim(),
       message_text: finalMsg || null,
       image_url: content.imageUrl || null,
       audio_url: content.audioUrl || null,
@@ -87,28 +87,28 @@ const MessageInput: React.FC<MessageInputProps> = ({
       status: 'sending'
     };
 
-    // 1. OPTIMISTIC UPDATE: Show locally instantly
+    // 1. Instant local display
     onMessageSent(messagePayload);
     setText('');
     setShowEmojiPicker(false);
 
-    // 2. FAST-PATH BROADCAST: Send directly via WebSocket to recipient
+    // 2. Instant WebSocket Broadcast (Must include all necessary fields)
     if (channel) {
       channel.send({
         type: 'broadcast',
-        event: 'new_message',
+        event: 'msg',
         payload: { ...messagePayload, status: 'sent' }
       });
     }
 
-    // 3. SLOW-PATH PERSISTENCE: Write to database
+    // 3. Persistent Storage (Database)
     try {
       const { data, error } = await supabase
         .from('messages')
         .insert([{
           id: messageId,
-          sender_email: senderEmail.toLowerCase(),
-          receiver_email: receiverEmail.toLowerCase(),
+          sender_email: senderEmail.toLowerCase().trim(),
+          receiver_email: receiverEmail.toLowerCase().trim(),
           message_text: finalMsg || null,
           image_url: content.imageUrl || null,
           audio_url: content.audioUrl || null,
@@ -118,8 +118,31 @@ const MessageInput: React.FC<MessageInputProps> = ({
         .select()
         .single();
 
-      if (error) throw error;
-      if (data) onMessageConfirmed(messageId, data);
+      if (error) {
+        // Fallback for ID collisions or schema issues
+        if (error.code === '22P02' || error.code === '23505') {
+          const { data: autoData, error: autoError } = await supabase
+            .from('messages')
+            .insert([{
+              sender_email: senderEmail.toLowerCase().trim(),
+              receiver_email: receiverEmail.toLowerCase().trim(),
+              message_text: finalMsg || null,
+              image_url: content.imageUrl || null,
+              audio_url: content.audioUrl || null,
+              is_read: false,
+              created_at: now
+            }])
+            .select()
+            .single();
+          
+          if (autoError) throw autoError;
+          if (autoData) onMessageConfirmed(messageId, autoData);
+        } else {
+          throw error;
+        }
+      } else if (data) {
+        onMessageConfirmed(messageId, data);
+      }
     } catch (err) {
       console.error('Send failed:', err);
       onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
@@ -131,7 +154,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     if (!file || disabled) return;
     setIsUploading(true);
     try {
-      const fileName = `${crypto.randomUUID()}.${file.name.split('.').pop()}`;
+      const fileName = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${file.name.split('.').pop()}`;
       const { error } = await supabase.storage.from('media').upload(fileName, file);
       if (error) throw error;
       const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName);
@@ -154,7 +177,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
       recorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         setIsUploading(true);
-        const fileName = `${crypto.randomUUID()}.webm`;
+        const fileName = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}.webm`;
         await supabase.storage.from('media').upload(fileName, audioBlob);
         const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName);
         await handleSend({ audioUrl: publicUrl });
