@@ -46,14 +46,18 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const [clearSuccess, setClearSuccess] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'connecting' | 'synced' | 'error'>('connecting');
   
-  // Modal States
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
-  // Persistent storage sync
+  // Keep ref of messages for realtime checks
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(hiddenMessageIds));
   }, [hiddenMessageIds, storageKey]);
@@ -62,7 +66,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     localStorage.setItem(wallpaperKey, wallpaper);
   }, [wallpaper, wallpaperKey]);
 
-  // Read status updater
   const markMessagesAsRead = useCallback(async () => {
     try {
       await supabase
@@ -72,11 +75,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .eq('sender_email', receiverEmail)
         .eq('is_read', false);
     } catch (e) {
-      console.error('Read update failed:', e);
+      console.debug('Failed to sync read status');
     }
   }, [currentUserEmail, receiverEmail]);
 
-  // Core fetch logic
   const fetchMessages = useCallback(async (showLoading = true) => {
     if (showLoading) setLoadingHistory(true);
     try {
@@ -87,10 +89,9 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .order('created_at', { ascending: true });
 
       if (error) {
-        if (error.code === '42P01') setDbError('DB_ERROR');
+        if (error.code === '42P01') setDbError('DB_OFFLINE');
       } else if (data) {
         setDbError(null);
-        // Strict filtering for the 1-on-1 chat
         const filtered = data.filter(m => {
           const s = (m.sender_email || '').toLowerCase().trim();
           const r = (m.receiver_email || '').toLowerCase().trim();
@@ -106,127 +107,107 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   }, [currentUserEmail, receiverEmail, markMessagesAsRead]);
 
-  // Realtime Logic
+  // STABLE REALTIME ENGINE - Initialized once
   useEffect(() => {
-    // 1. Initial Load
-    fetchMessages();
+    fetchMessages(true);
 
-    // 2. Setup Unified Channel
-    const channelName = `chat_${[currentUserEmail, receiverEmail].sort().join('_')}`;
+    const channelName = `realtime:${[currentUserEmail, receiverEmail].sort().join('-')}`;
     const channel = supabase.channel(channelName, {
-      config: { presence: { key: currentUserEmail } }
+      config: {
+        presence: { key: currentUserEmail },
+        broadcast: { self: false }
+      }
     });
 
     channelRef.current = channel;
 
-    // Listen for NEW messages (INSERT)
-    channel.on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'messages' },
-      (payload) => {
+    channel
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const newMessage = payload.new as Message;
         const s = (newMessage.sender_email || '').toLowerCase().trim();
         const r = (newMessage.receiver_email || '').toLowerCase().trim();
-        
-        // Filter: Only process if it belongs to this conversation
+
+        // Immediate Filtering
         if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
-          setMessages((prev) => {
-            if (prev.some(m => m.id === newMessage.id)) return prev;
+          setMessages(prev => {
+            const exists = prev.find(m => m.id === newMessage.id);
+            if (exists) {
+              // Update optimistic message with real server data
+              return prev.map(m => m.id === newMessage.id ? { ...newMessage, status: 'sent' } : m);
+            }
             return [...prev, { ...newMessage, status: 'sent' }];
           });
-          
+
           if (r === currentUserEmail) {
             markMessagesAsRead();
             setIsTyping(false);
           }
         }
-      }
-    );
-
-    // Listen for UPDATES (e.g., read status, edits)
-    channel.on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'messages' },
-      (payload) => {
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
         const updated = payload.new as Message;
         setMessages(prev => prev.map(m => m.id === updated.id ? { ...m, ...updated } : m));
-      }
-    );
-
-    // Listen for DELETES
-    channel.on(
-      'postgres_changes',
-      { event: 'DELETE', schema: 'public', table: 'messages' },
-      (payload) => {
-        if (payload.old && payload.old.id) {
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
+        if (payload.old?.id) {
           setMessages(prev => prev.filter(m => m.id !== payload.old.id));
-        } else {
-          fetchMessages(false);
         }
-      }
-    );
+      })
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const users = Object.values(state).flat().map((u: any) => u.user);
+        setIsReceiverOnline(users.includes(receiverEmail));
+      })
+      .on('broadcast', { event: 'typing' }, (payload) => {
+        if (payload.payload.user === receiverEmail) {
+          setIsTyping(true);
+          if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
+          receiverTypingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
+        }
+      })
+      .on('broadcast', { event: 'stopped_typing' }, (payload) => {
+        if (payload.payload.user === receiverEmail) setIsTyping(false);
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          setSyncStatus('synced');
+          await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
+        } else {
+          setSyncStatus('connecting');
+        }
+      });
 
-    // Presence Logic
-    channel.on('presence', { event: 'sync' }, () => {
-      const state = channel.presenceState();
-      const onlineUsers = Object.values(state).flat().map((u: any) => u.user);
-      setIsReceiverOnline(onlineUsers.includes(receiverEmail));
-    });
-
-    // Typing Broadcast Logic
-    channel.on('broadcast', { event: 'typing' }, (payload) => {
-      if (payload.payload.user === receiverEmail) {
-        setIsTyping(true);
-        if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
-        receiverTypingTimeoutRef.current = setTimeout(() => setIsTyping(false), 4000);
-      }
-    });
-
-    channel.on('broadcast', { event: 'stopped_typing' }, (payload) => {
-      if (payload.payload.user === receiverEmail) setIsTyping(false);
-    });
-
-    // Subscribe and Auto-Track
-    channel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        setSyncStatus('synced');
-        await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
-      } else {
-        setSyncStatus('connecting');
-      }
-    });
-
-    // RESYNC ON WAKE-UP (Fixes mobile sync issues)
-    const handleVisibilityChange = () => {
+    // AUTO-SYNC ON FOREGROUND (Mobile Fix)
+    const onFocus = () => {
       if (document.visibilityState === 'visible') {
-        fetchMessages(false); // Silent sync without loading spinner
+        fetchMessages(false); // Background sync to catch anything missed
         markMessagesAsRead();
+        // Re-track presence if socket dropped
+        if (channelRef.current) {
+          channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
+        }
       }
     };
 
-    window.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleVisibilityChange);
+    window.addEventListener('visibilitychange', onFocus);
+    window.addEventListener('focus', onFocus);
 
     return () => {
       supabase.removeChannel(channel);
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleVisibilityChange);
+      window.removeEventListener('visibilitychange', onFocus);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [currentUserEmail, receiverEmail, fetchMessages, markMessagesAsRead]);
+  }, [currentUserEmail, receiverEmail]); // Dependencies are now minimal and stable
 
-  // Actions
   const executeClearChat = async () => {
     setShowClearConfirm(false);
     setIsClearing(true);
     try {
-      await supabase
-        .from('messages')
-        .delete()
-        .or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
+      await supabase.from('messages').delete().or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
       setMessages([]);
       setHiddenMessageIds([]);
       setClearSuccess(true);
-      setTimeout(() => setClearSuccess(false), 2000);
+      setTimeout(() => setClearSuccess(false), 1500);
     } catch (err) {
       console.error(err);
     } finally {
@@ -295,54 +276,47 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       
       <div className="flex-1 overflow-hidden relative flex flex-col">
         {syncStatus === 'connecting' && !loadingHistory && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-white text-[9px] font-black px-3 py-1 rounded-full flex items-center space-x-2 shadow-lg animate-bounce">
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-white text-[9px] font-black px-4 py-1.5 rounded-full flex items-center space-x-2 shadow-xl animate-pulse">
             <RefreshCcw size={10} className="animate-spin" />
-            <span>CONNECTING REALTIME...</span>
+            <span className="tracking-widest uppercase">Connecting Sync...</span>
           </div>
         )}
 
-        {/* Delete Confirmation UI */}
         {(showClearConfirm || deleteTarget) && (
-          <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
-            <div className="bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/10 scale-100 animate-in zoom-in-95 duration-200">
-              <div className="p-8 text-center space-y-5">
-                <div className="w-20 h-20 bg-red-50 dark:bg-red-950/30 rounded-full flex items-center justify-center mx-auto ring-8 ring-red-500/5">
-                  <AlertTriangle size={36} className="text-red-500" />
+          <div className="absolute inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-6">
+            <div className="bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2rem] shadow-2xl overflow-hidden border border-white/10 animate-in zoom-in-95 duration-150">
+              <div className="p-8 text-center space-y-4">
+                <div className="w-16 h-16 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center mx-auto text-red-500">
+                  <AlertTriangle size={32} />
                 </div>
-                <div>
-                  <h3 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tight">
-                    {showClearConfirm ? 'Clear Conversation?' : 'Delete Message?'}
-                  </h3>
-                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-[0.2em] leading-relaxed mt-2 opacity-70">
-                    This action is permanent and cannot be undone.
-                  </p>
-                </div>
+                <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">Confirm Delete?</h3>
+                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-relaxed">This action cannot be undone.</p>
               </div>
               <div className="flex border-t dark:border-gray-800">
-                <button onClick={() => { setShowClearConfirm(false); setDeleteTarget(null); }} className="flex-1 py-5 text-[11px] font-black uppercase tracking-widest text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors border-r dark:border-gray-800">Cancel</button>
-                <button onClick={showClearConfirm ? executeClearChat : executeDeleteForEveryone} className="flex-1 py-5 text-[11px] font-black uppercase tracking-widest text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">Confirm</button>
+                <button onClick={() => { setShowClearConfirm(false); setDeleteTarget(null); }} className="flex-1 py-4 text-[10px] font-black uppercase text-gray-400 border-r dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">Cancel</button>
+                <button onClick={showClearConfirm ? executeClearChat : executeDeleteForEveryone} className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">Confirm</button>
               </div>
             </div>
           </div>
         )}
 
         {isClearing && (
-          <div className="absolute inset-0 z-[110] bg-white/70 dark:bg-black/70 backdrop-blur-md flex items-center justify-center">
-            <div className="flex flex-col items-center space-y-4">
-              <Loader2 size={50} className="animate-spin text-emerald-500" />
-              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-emerald-600">Wiping Chat...</p>
-            </div>
+          <div className="absolute inset-0 z-[110] bg-white/50 dark:bg-black/50 backdrop-blur-md flex items-center justify-center">
+            <Loader2 size={40} className="animate-spin text-emerald-500" />
           </div>
         )}
-        
-        {clearSuccess && <div className="absolute inset-0 z-[120] bg-emerald-500 flex items-center justify-center text-white text-3xl font-black uppercase animate-in fade-in zoom-in">Success</div>}
 
         {loadingHistory ? (
-          <div className="flex-1 flex items-center justify-center"><Loader2 className="animate-spin text-emerald-500" size={48} /></div>
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex flex-col items-center space-y-4">
+              <Loader2 className="animate-spin text-emerald-500" size={40} />
+              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500/50">Restoring Chat</p>
+            </div>
+          </div>
         ) : visibleMessages.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
-            <MessageSquareOff size={100} className="text-emerald-500/10 mb-6" />
-            <p className="text-[11px] font-black uppercase text-gray-400 tracking-[0.4em]">Ready to talk</p>
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-6 opacity-30">
+            <MessageSquareOff size={100} className="text-emerald-500 mb-6" />
+            <p className="text-[11px] font-black uppercase tracking-[0.4em]">Conversation Secured</p>
           </div>
         ) : (
           <MessageList 

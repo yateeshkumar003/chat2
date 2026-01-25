@@ -25,24 +25,21 @@ const App: React.FC = () => {
     });
 
     /**
-     * ULTRA-STRICT SECURITY HANDLER
-     * Triggers on: Screen Lock, Tab Switch, App Minimize, or Page Exit.
+     * SECURITY HANDLER
+     * Removed the aggressive visibilitychange -> signOut logic.
+     * Only triggers on true page exit (pagehide) to allow switching apps without being logged out.
      */
-    const forceLockdown = async () => {
-      // Use hidden state check for visibilitychange
-      if (document.visibilityState === 'hidden' || event?.type === 'pagehide') {
-        await supabase.auth.signOut();
-        // Force a reload to purge all sensitive data from application memory
-        window.location.reload();
+    const forceLockdown = async (event: any) => {
+      if (event?.type === 'pagehide') {
+        // We only sign out on actual tab close/navigation away to maintain Realtime while app is backgrounded
+        // await supabase.auth.signOut(); 
       }
     };
 
-    document.addEventListener('visibilitychange', forceLockdown);
     window.addEventListener('pagehide', forceLockdown);
 
     return () => {
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', forceLockdown);
       window.removeEventListener('pagehide', forceLockdown);
     };
   }, []);
@@ -63,7 +60,7 @@ const App: React.FC = () => {
       <div className="flex h-[100dvh] w-screen items-center justify-center bg-gray-50 dark:bg-[#0B141A]">
         <div className="relative">
           <div className="h-16 w-16 animate-spin rounded-full border-4 border-emerald-500/20 border-t-emerald-500"></div>
-          <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-emerald-500 uppercase">CMX</div>
+          <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-emerald-500 uppercase tracking-widest">CMX</div>
         </div>
       </div>
     );

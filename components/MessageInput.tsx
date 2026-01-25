@@ -61,9 +61,11 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
     onTypingStatus('stopped_typing');
     lastTypingTimeRef.current = 0;
 
-    const tempId = crypto.randomUUID();
+    // PRE-GENERATE UUID FOR INSTANT SYNC
+    const messageId = crypto.randomUUID();
+    
     const optimisticMsg: Message = {
-      id: tempId,
+      id: messageId,
       sender_email: senderEmail.toLowerCase(),
       receiver_email: receiverEmail.toLowerCase(),
       message_text: finalMsg || null,
@@ -82,6 +84,7 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
       const { data, error } = await supabase
         .from('messages')
         .insert([{
+          id: messageId, // PASS THE SAME ID TO DB
           sender_email: senderEmail.toLowerCase(),
           receiver_email: receiverEmail.toLowerCase(),
           message_text: finalMsg || null,
@@ -94,10 +97,10 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
         .single();
 
       if (error) throw error;
-      if (data) onMessageConfirmed(tempId, data);
+      if (data) onMessageConfirmed(messageId, data);
     } catch (err) {
       console.error('Send error:', err);
-      onMessageConfirmed(tempId, { ...optimisticMsg, status: 'error' });
+      onMessageConfirmed(messageId, { ...optimisticMsg, status: 'error' });
     }
   };
 
@@ -144,7 +147,7 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
   };
 
   return (
-    <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t dark:border-gray-800 ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
+    <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t dark:border-gray-800 ${disabled ? 'opacity-50' : ''}`}>
       {showEmojiPicker && (
         <div className="absolute bottom-20 left-0 w-full md:max-w-sm z-50 shadow-2xl rounded-t-2xl overflow-hidden">
           <EmojiPicker 
@@ -161,33 +164,11 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
         {!isRecording ? (
           <>
             <div className="flex items-center shrink-0">
-              <button 
-                onClick={() => setShowEmojiPicker(!showEmojiPicker)} 
-                className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500 shrink-0"
-                title="Emojis"
-              >
-                <Smile size={24} />
-              </button>
-              
-              <button 
-                onClick={startRecording} 
-                className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500 shrink-0"
-                title="Record Audio"
-              >
-                <Mic size={24} />
-              </button>
-
-              <button 
-                onClick={() => fileInputRef.current?.click()} 
-                className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500 shrink-0"
-                title="Attach Image"
-              >
-                <Paperclip size={24} className="-rotate-45" />
-              </button>
+              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500"><Smile size={24} /></button>
+              <button onClick={startRecording} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500"><Mic size={24} /></button>
+              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500"><Paperclip size={24} className="-rotate-45" /></button>
             </div>
-
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
-            
             <input
               type="text"
               value={text}
@@ -196,27 +177,18 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
               placeholder="Type a message"
               className="flex-1 min-w-0 py-2.5 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-medium text-black dark:text-white"
             />
-
             {(text.trim() || isUploading) && (
-              <button 
-                onClick={() => handleSend({ text })} 
-                className="p-3 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90 shrink-0"
-                disabled={isUploading}
-              >
+              <button onClick={() => handleSend({ text })} className="p-3 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90" disabled={isUploading}>
                 {isUploading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
               </button>
             )}
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-2 border-2 border-emerald-500/20 shadow-inner">
-            <span className="text-sm font-black text-[#000000] dark:text-white animate-pulse uppercase tracking-widest">
-              Recording {Math.floor(recordingTime/60)}:{(recordingTime%60).toString().padStart(2,'0')}
-            </span>
+          <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-2 border-2 border-emerald-500/20">
+            <span className="text-sm font-black text-emerald-600 animate-pulse uppercase tracking-widest">Recording...</span>
             <div className="flex space-x-4">
-              <button onClick={() => setIsRecording(false)} className="text-red-500 font-black text-[10px] uppercase tracking-tighter">Cancel</button>
-              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-1 bg-emerald-500 text-white rounded-full shadow-lg animate-bounce">
-                <StopCircle size={20} />
-              </button>
+              <button onClick={() => setIsRecording(false)} className="text-red-500 font-black text-[10px] uppercase">Cancel</button>
+              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-1 bg-emerald-500 text-white rounded-full shadow-lg"><StopCircle size={20} /></button>
             </div>
           </div>
         )}
