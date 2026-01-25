@@ -6,7 +6,7 @@ const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYm
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: window.sessionStorage,
+    storage: window.localStorage, // Changed from sessionStorage for better mobile persistence
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true
@@ -15,14 +15,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 
 /**
  * DATABASE SCHEMA VERIFIED:
- * 
- * -- Enable Realtime for deletions and updates
- * ALTER TABLE public.messages REPLICA IDENTITY FULL;
- * 
  * -- Ensure columns exist
  * ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT false;
- * 
- * -- Enable Realtime in Supabase Dashboard:
- * -- 1. Go to Database -> Replication
- * -- 2. Enable 'supabase_realtime' for the 'messages' table
+ * ALTER TABLE public.messages REPLICA IDENTITY FULL;
  */

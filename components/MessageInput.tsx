@@ -10,12 +10,22 @@ interface MessageInputProps {
   receiverEmail: string;
   disabled?: boolean;
   theme: Theme;
-  onTypingStatus: (status: 'typing' | 'stopped_typing') => void;
+  channel?: any;
+  onTypingStatus: (status: 'typing' | 'stop_typing') => void;
   onMessageSent: (msg: Message) => void;
   onMessageConfirmed: (tempId: string, confirmedMsg: Message) => void;
 }
 
-const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail, disabled, theme, onTypingStatus, onMessageSent, onMessageConfirmed }) => {
+const MessageInput: React.FC<MessageInputProps> = ({ 
+  senderEmail, 
+  receiverEmail, 
+  disabled, 
+  theme, 
+  channel,
+  onTypingStatus, 
+  onMessageSent, 
+  onMessageConfirmed 
+}) => {
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -47,7 +57,7 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
     }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      onTypingStatus('stopped_typing');
+      onTypingStatus('stop_typing');
       lastTypingTimeRef.current = 0;
     }, 2000);
   };
@@ -58,11 +68,11 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
     if (!finalMsg && !content.imageUrl && !content.audioUrl) return;
 
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    onTypingStatus('stopped_typing');
+    onTypingStatus('stop_typing');
     lastTypingTimeRef.current = 0;
 
-    // PRE-GENERATE UUID FOR INSTANT SYNC
     const messageId = crypto.randomUUID();
+    const now = new Date().toISOString();
     
     const optimisticMsg: Message = {
       id: messageId,
@@ -71,27 +81,38 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
       message_text: finalMsg || null,
       image_url: content.imageUrl || null,
       audio_url: content.audioUrl || null,
-      created_at: new Date().toISOString(),
+      created_at: now,
       is_read: false,
       status: 'sending'
     };
 
+    // 1. Show instantly on sender's screen
     onMessageSent(optimisticMsg);
     setText('');
     setShowEmojiPicker(false);
 
+    // 2. BROADCAST INSTANTLY to recipient (Bypasses DB lag)
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'new_message',
+        payload: { ...optimisticMsg, status: 'sent' }
+      });
+    }
+
+    // 3. Persist to Database
     try {
       const { data, error } = await supabase
         .from('messages')
         .insert([{
-          id: messageId, // PASS THE SAME ID TO DB
+          id: messageId,
           sender_email: senderEmail.toLowerCase(),
           receiver_email: receiverEmail.toLowerCase(),
           message_text: finalMsg || null,
           image_url: content.imageUrl || null,
           audio_url: content.audioUrl || null,
           is_read: false,
-          created_at: new Date().toISOString()
+          created_at: now
         }])
         .select()
         .single();

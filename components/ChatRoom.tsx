@@ -52,12 +52,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
-  // Keep ref of messages for realtime checks
-  const messagesRef = useRef<Message[]>([]);
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(hiddenMessageIds));
   }, [hiddenMessageIds, storageKey]);
@@ -75,7 +69,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .eq('sender_email', receiverEmail)
         .eq('is_read', false);
     } catch (e) {
-      console.debug('Failed to sync read status');
+      console.debug('Read sync delayed...');
     }
   }, [currentUserEmail, receiverEmail]);
 
@@ -89,7 +83,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .order('created_at', { ascending: true });
 
       if (error) {
-        if (error.code === '42P01') setDbError('DB_OFFLINE');
+        if (error.code === '42P01') setDbError('DB_ERR');
       } else if (data) {
         setDbError(null);
         const filtered = data.filter(m => {
@@ -107,131 +101,106 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   }, [currentUserEmail, receiverEmail, markMessagesAsRead]);
 
-  // STABLE REALTIME ENGINE - Initialized once
+  // STABLE REALTIME ENGINE with Instant Broadcast
   useEffect(() => {
     fetchMessages(true);
 
-    const channelName = `realtime:${[currentUserEmail, receiverEmail].sort().join('-')}`;
-    const channel = supabase.channel(channelName, {
+    const channelId = [currentUserEmail, receiverEmail].sort().join('--');
+    const channel = supabase.channel(`direct_v2:${channelId}`, {
       config: {
         presence: { key: currentUserEmail },
-        broadcast: { self: false }
+        broadcast: { self: false, ack: true }
       }
     });
 
     channelRef.current = channel;
 
-    channel
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
-        const newMessage = payload.new as Message;
-        const s = (newMessage.sender_email || '').toLowerCase().trim();
-        const r = (newMessage.receiver_email || '').toLowerCase().trim();
+    // 1. INSTANT BROADCAST HANDLER (Bypasses DB lag for User B)
+    channel.on('broadcast', { event: 'new_message' }, (payload) => {
+      const incomingMsg = payload.payload as Message;
+      setMessages(prev => {
+        if (prev.some(m => m.id === incomingMsg.id)) return prev;
+        return [...prev, { ...incomingMsg, status: 'sent' }];
+      });
+      setIsTyping(false);
+      markMessagesAsRead();
+    });
 
-        // Immediate Filtering
-        if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
-          setMessages(prev => {
-            const exists = prev.find(m => m.id === newMessage.id);
-            if (exists) {
-              // Update optimistic message with real server data
-              return prev.map(m => m.id === newMessage.id ? { ...newMessage, status: 'sent' } : m);
-            }
-            return [...prev, { ...newMessage, status: 'sent' }];
-          });
+    // 2. DB CHANGE HANDLER (Source of truth / confirmation)
+    channel.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+      const newMessage = payload.new as Message;
+      const s = (newMessage.sender_email || '').toLowerCase().trim();
+      const r = (newMessage.receiver_email || '').toLowerCase().trim();
 
-          if (r === currentUserEmail) {
-            markMessagesAsRead();
-            setIsTyping(false);
+      if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
+        setMessages(prev => {
+          const exists = prev.find(m => m.id === newMessage.id);
+          if (exists) {
+            // Already there from Broadcast or Optimistic UI, just mark as 'sent'
+            return prev.map(m => m.id === newMessage.id ? { ...newMessage, status: 'sent' } : m);
           }
-        }
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
+          return [...prev, { ...newMessage, status: 'sent' }];
+        });
+        if (r === currentUserEmail) markMessagesAsRead();
+      }
+    });
+
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, (payload) => {
+      if (payload.eventType === 'UPDATE') {
         const updated = payload.new as Message;
         setMessages(prev => prev.map(m => m.id === updated.id ? { ...m, ...updated } : m));
-      })
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
+      } else if (payload.eventType === 'DELETE') {
         if (payload.old?.id) {
           setMessages(prev => prev.filter(m => m.id !== payload.old.id));
         }
-      })
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const users = Object.values(state).flat().map((u: any) => u.user);
-        setIsReceiverOnline(users.includes(receiverEmail));
-      })
-      .on('broadcast', { event: 'typing' }, (payload) => {
-        if (payload.payload.user === receiverEmail) {
-          setIsTyping(true);
-          if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
-          receiverTypingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
-        }
-      })
-      .on('broadcast', { event: 'stopped_typing' }, (payload) => {
-        if (payload.payload.user === receiverEmail) setIsTyping(false);
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          setSyncStatus('synced');
-          await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
-        } else {
-          setSyncStatus('connecting');
-        }
-      });
+      }
+    });
 
-    // AUTO-SYNC ON FOREGROUND (Mobile Fix)
-    const onFocus = () => {
+    // 3. PRESENCE & TYPING
+    channel.on('presence', { event: 'sync' }, () => {
+      const state = channel.presenceState();
+      const online = Object.values(state).flat().map((u: any) => u.user);
+      setIsReceiverOnline(online.includes(receiverEmail));
+    });
+
+    channel.on('broadcast', { event: 'typing' }, (payload) => {
+      if (payload.payload.user === receiverEmail) {
+        setIsTyping(true);
+        if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
+        receiverTypingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
+      }
+    });
+
+    channel.on('broadcast', { event: 'stop_typing' }, () => setIsTyping(false));
+
+    channel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        setSyncStatus('synced');
+        await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
+      } else {
+        setSyncStatus('connecting');
+      }
+    });
+
+    // Handle background wake-up
+    const handleWake = () => {
       if (document.visibilityState === 'visible') {
-        fetchMessages(false); // Background sync to catch anything missed
-        markMessagesAsRead();
-        // Re-track presence if socket dropped
-        if (channelRef.current) {
-          channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
-        }
+        fetchMessages(false);
+        if (channelRef.current) channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
       }
     };
 
-    window.addEventListener('visibilitychange', onFocus);
-    window.addEventListener('focus', onFocus);
+    window.addEventListener('visibilitychange', handleWake);
+    window.addEventListener('focus', handleWake);
 
     return () => {
       supabase.removeChannel(channel);
-      window.removeEventListener('visibilitychange', onFocus);
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('visibilitychange', handleWake);
+      window.removeEventListener('focus', handleWake);
     };
-  }, [currentUserEmail, receiverEmail]); // Dependencies are now minimal and stable
+  }, [currentUserEmail, receiverEmail]);
 
-  const executeClearChat = async () => {
-    setShowClearConfirm(false);
-    setIsClearing(true);
-    try {
-      await supabase.from('messages').delete().or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
-      setMessages([]);
-      setHiddenMessageIds([]);
-      setClearSuccess(true);
-      setTimeout(() => setClearSuccess(false), 1500);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsClearing(false);
-    }
-  };
-
-  const executeDeleteForEveryone = async () => {
-    if (!deleteTarget) return;
-    const id = deleteTarget;
-    setDeleteTarget(null);
-    try {
-      await supabase.from('messages').delete().eq('id', id);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleDeleteMessage = (id: string, forEveryone: boolean) => {
-    if (forEveryone) setDeleteTarget(id);
-    else setHiddenMessageIds(prev => [...prev, id]);
-  };
-
-  const sendTypingStatus = (status: 'typing' | 'stopped_typing') => {
+  const sendTypingStatus = (status: 'typing' | 'stop_typing') => {
     if (channelRef.current && syncStatus === 'synced') {
       channelRef.current.send({
         type: 'broadcast',
@@ -278,7 +247,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         {syncStatus === 'connecting' && !loadingHistory && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-white text-[9px] font-black px-4 py-1.5 rounded-full flex items-center space-x-2 shadow-xl animate-pulse">
             <RefreshCcw size={10} className="animate-spin" />
-            <span className="tracking-widest uppercase">Connecting Sync...</span>
+            <span className="tracking-widest uppercase">Syncing Live...</span>
           </div>
         )}
 
@@ -289,12 +258,26 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
                 <div className="w-16 h-16 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center mx-auto text-red-500">
                   <AlertTriangle size={32} />
                 </div>
-                <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">Confirm Delete?</h3>
-                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-relaxed">This action cannot be undone.</p>
+                <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase">Confirm?</h3>
+                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-relaxed">This action is permanent.</p>
               </div>
               <div className="flex border-t dark:border-gray-800">
                 <button onClick={() => { setShowClearConfirm(false); setDeleteTarget(null); }} className="flex-1 py-4 text-[10px] font-black uppercase text-gray-400 border-r dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">Cancel</button>
-                <button onClick={showClearConfirm ? executeClearChat : executeDeleteForEveryone} className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">Confirm</button>
+                <button onClick={showClearConfirm ? async () => {
+                  setShowClearConfirm(false);
+                  setIsClearing(true);
+                  await supabase.from('messages').delete().or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
+                  setMessages([]);
+                  setIsClearing(false);
+                  setClearSuccess(true);
+                  setTimeout(() => setClearSuccess(false), 1500);
+                } : async () => {
+                  if (deleteTarget) {
+                    const id = deleteTarget;
+                    setDeleteTarget(null);
+                    await supabase.from('messages').delete().eq('id', id);
+                  }
+                }} className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">Confirm</button>
               </div>
             </div>
           </div>
@@ -308,15 +291,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
 
         {loadingHistory ? (
           <div className="flex-1 flex items-center justify-center">
-            <div className="flex flex-col items-center space-y-4">
-              <Loader2 className="animate-spin text-emerald-500" size={40} />
-              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500/50">Restoring Chat</p>
-            </div>
+            <Loader2 className="animate-spin text-emerald-500" size={40} />
           </div>
         ) : visibleMessages.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center px-6 opacity-30">
-            <MessageSquareOff size={100} className="text-emerald-500 mb-6" />
-            <p className="text-[11px] font-black uppercase tracking-[0.4em]">Conversation Secured</p>
+          <div className="flex-1 flex flex-col items-center justify-center opacity-20">
+            <MessageSquareOff size={80} className="text-emerald-500 mb-4" />
+            <p className="text-[10px] font-black uppercase tracking-[0.3em]">No Messages</p>
           </div>
         ) : (
           <MessageList 
@@ -324,7 +304,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
             currentUserEmail={currentUserEmail} 
             isReceiverOnline={isReceiverOnline}
             onImageClick={setSelectedImage}
-            onDeleteMessage={handleDeleteMessage}
+            onDeleteMessage={(id, forEveryone) => {
+              if (forEveryone) setDeleteTarget(id);
+              else setHiddenMessageIds(prev => [...prev, id]);
+            }}
           />
         )}
       </div>
@@ -334,6 +317,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         receiverEmail={receiverEmail} 
         disabled={!!dbError || isClearing || clearSuccess || showClearConfirm || !!deleteTarget}
         theme={theme}
+        channel={channelRef.current}
         onTypingStatus={sendTypingStatus}
         onMessageSent={(msg) => setMessages(prev => [...prev, msg])}
         onMessageConfirmed={(tempId, confirmedMsg) => {
