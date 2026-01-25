@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Sun, Moon, Trash2, LogOut, Palette } from 'lucide-react';
+import { Sun, Moon, Trash2, LogOut, Palette, RefreshCw } from 'lucide-react';
 import { UserProfile, Theme } from '../types';
 
 interface HeaderProps {
@@ -8,23 +8,42 @@ interface HeaderProps {
   theme: Theme;
   isTyping: boolean;
   isOnline: boolean;
+  syncStatus: 'connecting' | 'synced' | 'error';
   toggleTheme: () => void;
   onClearChat: () => void;
   onLogout: () => void;
   onOpenWallpaper: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ receiver, theme, isTyping, isOnline, toggleTheme, onClearChat, onLogout, onOpenWallpaper }) => {
+const Header: React.FC<HeaderProps> = ({ 
+  receiver, 
+  theme, 
+  isTyping, 
+  isOnline, 
+  syncStatus,
+  toggleTheme, 
+  onClearChat, 
+  onLogout, 
+  onOpenWallpaper 
+}) => {
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-white dark:bg-[#202C33] shadow-sm border-b dark:border-gray-800/50 backdrop-blur-md bg-opacity-95">
       <div className="flex items-center space-x-3">
-        <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-xl shadow-inner border border-emerald-200/50 dark:border-emerald-800/50">
+        <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-xl shadow-inner border border-emerald-200/50 dark:border-emerald-800/50 relative">
           {receiver.emoji}
+          {syncStatus === 'synced' && (
+            <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white dark:border-[#202C33]"></div>
+          )}
         </div>
         <div className="flex flex-col">
           <h2 className="font-bold text-gray-800 dark:text-gray-100 text-sm leading-tight">{receiver.email.split('@')[0]}</h2>
           <div className="flex items-center h-3 mt-0.5">
-            {isTyping ? (
+            {syncStatus === 'connecting' ? (
+              <div className="flex items-center text-amber-500 animate-pulse">
+                <RefreshCw size={8} className="mr-1 animate-spin" />
+                <p className="text-[8px] font-black uppercase tracking-widest">Connecting...</p>
+              </div>
+            ) : isTyping ? (
               <p className="text-[10px] text-emerald-500 font-black italic animate-pulse lowercase tracking-wider">typing...</p>
             ) : isOnline ? (
               <div className="flex items-center">

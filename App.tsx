@@ -24,18 +24,26 @@ const App: React.FC = () => {
       setSession(session);
     });
 
-    // CRITICAL: Force logout on visibility change (lock screen, tab switch, minimize)
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        supabase.auth.signOut();
+    /**
+     * ULTRA-STRICT SECURITY HANDLER
+     * Triggers on: Screen Lock, Tab Switch, App Minimize, or Page Exit.
+     */
+    const forceLockdown = async () => {
+      // Use hidden state check for visibilitychange
+      if (document.visibilityState === 'hidden' || event?.type === 'pagehide') {
+        await supabase.auth.signOut();
+        // Force a reload to purge all sensitive data from application memory
+        window.location.reload();
       }
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('visibilitychange', forceLockdown);
+    window.addEventListener('pagehide', forceLockdown);
 
     return () => {
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', forceLockdown);
+      window.removeEventListener('pagehide', forceLockdown);
     };
   }, []);
 
