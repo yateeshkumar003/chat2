@@ -6,6 +6,7 @@ import Header from './Header';
 import MessageList from './MessageList';
 import MessageInput from './MessageInput';
 import ImageModal from './ImageModal';
+import WallpaperModal from './WallpaperModal';
 import { Database, Loader2, MessageSquareOff, CheckCircle2, Trash2, AlertTriangle, X } from 'lucide-react';
 
 interface ChatRoomProps {
@@ -19,6 +20,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const receiverEmail = currentUserEmail.includes('shoe') ? 'socks@gmail.com' : 'shoe@gmail.com';
   
   const storageKey = `hidden_messages_${currentUserEmail}`;
+  const wallpaperKey = `chat_wallpaper_${currentUserEmail}`;
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<string[]>(() => {
@@ -30,7 +32,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   });
   
+  const [wallpaper, setWallpaper] = useState<string>(() => {
+    return localStorage.getItem(wallpaperKey) || 'default';
+  });
+
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [showWallpaperModal, setShowWallpaperModal] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
@@ -43,14 +50,18 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   
   const typingChannelRef = useRef<any>(null);
+  const receiverTypingTimeoutRef = useRef<any>(null);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(hiddenMessageIds));
   }, [hiddenMessageIds, storageKey]);
 
+  useEffect(() => {
+    localStorage.setItem(wallpaperKey, wallpaper);
+  }, [wallpaper, wallpaperKey]);
+
   const markMessagesAsRead = useCallback(async () => {
     try {
-      // Only attempt to update if there are messages that belong to the other user and are unread
       await supabase
         .from('messages')
         .update({ is_read: true })
@@ -90,6 +101,15 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   }, [currentUserEmail, receiverEmail, markMessagesAsRead]);
 
+  // Refined clear typing logic
+  const clearTypingStatus = useCallback(() => {
+    setIsTyping(false);
+    if (receiverTypingTimeoutRef.current) {
+      clearTimeout(receiverTypingTimeoutRef.current);
+      receiverTypingTimeoutRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     fetchMessages();
 
@@ -108,8 +128,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
                 if (prev.some(m => m.id === newMessage.id)) return prev;
                 return [...prev, { ...newMessage, status: 'sent' }];
               });
-              // If we are the receiver of this new message, mark it as read immediately
-              if (r === currentUserEmail) markMessagesAsRead();
+              
+              if (r === currentUserEmail) {
+                markMessagesAsRead();
+                // Immediately clear typing status when a message is received
+                clearTypingStatus();
+              }
             }
           } else if (payload.eventType === 'UPDATE') {
             const updated = payload.new as Message;
@@ -135,10 +159,19 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         setIsReceiverOnline(onlineUsers.includes(receiverEmail));
       })
       .on('broadcast', { event: 'typing' }, (payload) => {
-        if (payload.payload.user === receiverEmail) setIsTyping(true);
+        if (payload.payload.user === receiverEmail) {
+          setIsTyping(true);
+          // Set safety timeout to clear status if sender disconnects or event is missed
+          if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
+          receiverTypingTimeoutRef.current = setTimeout(() => {
+            setIsTyping(false);
+          }, 4000); // 4 second safety buffer
+        }
       })
       .on('broadcast', { event: 'stopped_typing' }, (payload) => {
-        if (payload.payload.user === receiverEmail) setIsTyping(false);
+        if (payload.payload.user === receiverEmail) {
+          clearTypingStatus();
+        }
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
@@ -146,7 +179,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         }
       });
 
-    // Also mark as read when window/tab is focused
     const handleFocus = () => markMessagesAsRead();
     window.addEventListener('focus', handleFocus);
 
@@ -154,8 +186,9 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       supabase.removeChannel(chatChannel);
       supabase.removeChannel(roomChannel);
       window.removeEventListener('focus', handleFocus);
+      if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
     };
-  }, [currentUserEmail, receiverEmail, fetchMessages, markMessagesAsRead]);
+  }, [currentUserEmail, receiverEmail, fetchMessages, markMessagesAsRead, clearTypingStatus]);
 
   const executeClearChat = async () => {
     setShowClearConfirm(false);
@@ -172,14 +205,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         await supabase.storage.from('media').remove(mediaFiles);
       }
 
-      const { error: dbError } = await supabase
+      await supabase
         .from('messages')
         .delete()
         .or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
-
-      if (dbError) {
-        await supabase.from('messages').delete().eq('sender_email', currentUserEmail);
-      }
 
       setMessages([]);
       setHiddenMessageIds([]);
@@ -231,10 +260,28 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   };
 
+  const getWallpaperClass = () => {
+    if (wallpaper === 'default') return theme === 'dark' ? 'chat-wallpaper-dark' : 'chat-wallpaper-light';
+    const wpMap: Record<string, string> = {
+      'emerald': 'bg-emerald-500/10',
+      'blue': 'bg-sky-500/10',
+      'rose': 'bg-rose-500/10',
+      'slate': 'bg-slate-700/20',
+      'amber': 'bg-amber-500/10',
+      'dark-solid': 'bg-[#0B141A]',
+      'gradient-1': 'bg-gradient-to-br from-indigo-500/20 via-purple-500/20 to-pink-500/20',
+      'gradient-2': 'bg-gradient-to-tr from-emerald-500/20 to-teal-500/20',
+    };
+    return wpMap[wallpaper] || '';
+  };
+
   const visibleMessages = messages.filter(m => !hiddenMessageIds.includes(m.id));
 
   return (
-    <div className={`flex flex-col h-[100dvh] w-full overflow-hidden transition-all duration-700 ${theme === 'dark' ? 'chat-wallpaper-dark' : 'chat-wallpaper-light'}`}>
+    <div className={`flex flex-col h-[100dvh] w-full overflow-hidden transition-all duration-700 relative ${getWallpaperClass()}`}>
+      {/* Background layer for default patterns if selected */}
+      {wallpaper === 'default' && <div className="absolute inset-0 z-[-1] bg-whatsapp-light dark:bg-whatsapp-dark" />}
+      
       <Header 
         receiver={USERS[receiverEmail] || { email: receiverEmail, emoji: '👤' }} 
         toggleTheme={toggleTheme} 
@@ -243,10 +290,11 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         isOnline={isReceiverOnline}
         onClearChat={() => setShowClearConfirm(true)}
         onLogout={() => supabase.auth.signOut()}
+        onOpenWallpaper={() => setShowWallpaperModal(true)}
       />
       
       <div className="flex-1 overflow-hidden relative flex flex-col">
-        {/* Universal Confirmation Modal */}
+        {/* Deletion / Clear Confirmation */}
         {(showClearConfirm || deleteTarget) && (
           <div className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-300">
             <div className="bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/10 scale-100 animate-in zoom-in-95 duration-200">
@@ -329,6 +377,13 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       />
 
       {selectedImage && <ImageModal imageUrl={selectedImage} onClose={() => setSelectedImage(null)} />}
+      {showWallpaperModal && (
+        <WallpaperModal 
+          currentWallpaper={wallpaper} 
+          onSelect={(id) => { setWallpaper(id); setShowWallpaperModal(false); }} 
+          onClose={() => setShowWallpaperModal(false)} 
+        />
+      )}
     </div>
   );
 };

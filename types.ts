@@ -1,3 +1,5 @@
+// Fix: Added missing React import to resolve the React namespace for CSSProperties
+import React from 'react';
 
 export interface Message {
   id: string;
@@ -12,6 +14,13 @@ export interface Message {
 }
 
 export type Theme = 'light' | 'dark';
+
+export interface Wallpaper {
+  id: string;
+  name: string;
+  className?: string;
+  style?: React.CSSProperties;
+}
 
 export interface UserProfile {
   email: string;

@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Sun, Moon, Trash2, LogOut } from 'lucide-react';
+import { Sun, Moon, Trash2, LogOut, Palette } from 'lucide-react';
 import { UserProfile, Theme } from '../types';
 
 interface HeaderProps {
@@ -11,9 +11,10 @@ interface HeaderProps {
   toggleTheme: () => void;
   onClearChat: () => void;
   onLogout: () => void;
+  onOpenWallpaper: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ receiver, theme, isTyping, isOnline, toggleTheme, onClearChat, onLogout }) => {
+const Header: React.FC<HeaderProps> = ({ receiver, theme, isTyping, isOnline, toggleTheme, onClearChat, onLogout, onOpenWallpaper }) => {
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-white dark:bg-[#202C33] shadow-sm border-b dark:border-gray-800/50 backdrop-blur-md bg-opacity-95">
       <div className="flex items-center space-x-3">
@@ -38,6 +39,9 @@ const Header: React.FC<HeaderProps> = ({ receiver, theme, isTyping, isOnline, to
       </div>
 
       <div className="flex items-center space-x-1">
+        <button onClick={onOpenWallpaper} className="p-2.5 rounded-full hover:bg-emerald-50 dark:hover:bg-emerald-900/20 text-emerald-600 dark:text-emerald-500 transition-all active:scale-90" title="Change Wallpaper">
+          <Palette size={20} />
+        </button>
         <button onClick={onClearChat} className="p-2.5 rounded-full hover:bg-red-50 dark:hover:bg-red-950/40 transition-all text-gray-400 hover:text-red-500 active:scale-90 group relative">
           <Trash2 size={20} />
           <span className="absolute -bottom-8 right-0 bg-red-600 text-white text-[8px] font-black px-2 py-1 rounded opacity-0 group-hover:opacity-100 uppercase tracking-tighter">Clear All</span>

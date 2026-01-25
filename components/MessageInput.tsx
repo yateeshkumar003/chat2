@@ -131,7 +131,6 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
       recorder.start();
       setIsRecording(true);
     } catch (err) { 
-      // Replaced window.alert with a console error to prevent sandbox issues
       console.error('Mic access denied');
     }
   };
@@ -144,11 +143,12 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
           <div className="fixed inset-0 z-[-1]" onClick={() => setShowEmojiPicker(false)} />
         </div>
       )}
-      <div className="flex items-center space-x-2 max-w-5xl mx-auto">
+
+      <div className="flex items-center space-x-1 md:space-x-2 max-w-5xl mx-auto">
         {!isRecording ? (
           <>
-            <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500"><Smile size={26} /></button>
-            <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500"><Paperclip size={26} className="-rotate-45" /></button>
+            <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500"><Smile size={24} /></button>
+            <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] transition-colors hover:text-emerald-500"><Paperclip size={24} className="-rotate-45" /></button>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
             <input
               type="text"
@@ -156,18 +156,18 @@ const MessageInput: React.FC<MessageInputProps> = ({ senderEmail, receiverEmail,
               onChange={handleInputChange}
               onKeyDown={(e) => e.key === 'Enter' && handleSend({ text })}
               placeholder="Type a message"
-              className="flex-1 py-3 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-black text-black dark:text-white"
+              className="flex-1 py-2.5 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-black text-black dark:text-white"
             />
-            <button onClick={() => text.trim() ? handleSend({ text }) : startRecording()} className="p-3.5 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90">
-              {isUploading ? <Loader2 size={22} className="animate-spin" /> : (text.trim() ? <Send size={22} /> : <Mic size={22} />)}
+            <button onClick={() => text.trim() ? handleSend({ text }) : startRecording()} className="p-3 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90">
+              {isUploading ? <Loader2 size={20} className="animate-spin" /> : (text.trim() ? <Send size={20} /> : <Mic size={20} />)}
             </button>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-3 border-2 border-emerald-500/20 shadow-inner">
+          <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-2 border-2 border-emerald-500/20 shadow-inner">
             <span className="text-sm font-black text-[#000000] dark:text-white animate-pulse uppercase tracking-widest">Recording {Math.floor(recordingTime/60)}:{(recordingTime%60).toString().padStart(2,'0')}</span>
             <div className="flex space-x-4">
               <button onClick={() => setIsRecording(false)} className="text-red-500 font-black text-[10px] uppercase tracking-tighter">Cancel</button>
-              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-1.5 bg-emerald-500 text-white rounded-full shadow-lg animate-bounce"><StopCircle size={22} /></button>
+              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-1 bg-emerald-500 text-white rounded-full shadow-lg animate-bounce"><StopCircle size={20} /></button>
             </div>
           </div>
         )}

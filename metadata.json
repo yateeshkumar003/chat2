@@ -1,8 +1,7 @@
 {
-  "name": "Shoe & Socks Chat",
+  "name": "commx",
   "description": "A secure, mobile-first one-to-one real-time chat application with text, emoji, image, and audio messaging.",
   "requestFramePermissions": [
-    "camera",
     "microphone"
   ]
 }

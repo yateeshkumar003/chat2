@@ -30,7 +30,7 @@ const Auth: React.FC = () => {
     const allowed = ['shoe@gmail.com', 'socks@gmail.com'];
 
     if (!allowed.includes(emailLower)) {
-      setError({ msg: 'Access Denied: Restricted to Shoe & Socks accounts.', type: 'error' });
+      setError({ msg: 'Access Denied: Restricted accounts only.', type: 'error' });
       setLoading(false);
       return;
     }
@@ -93,7 +93,7 @@ const Auth: React.FC = () => {
           </div>
           
           <div>
-            <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tighter uppercase">Shoe & Socks</h1>
+            <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tighter uppercase">commx</h1>
             <p className="text-gray-500 dark:text-gray-400 text-[10px] font-bold uppercase tracking-[0.2em]">Secure Node Entrance</p>
           </div>
         </div>
@@ -107,7 +107,7 @@ const Auth: React.FC = () => {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="shoe@gmail.com"
+              placeholder="Enter Identification Email"
               required
               className="w-full px-5 py-4 rounded-2xl border-2 border-gray-100 dark:border-gray-800 dark:bg-[#202C33] dark:text-white focus:border-emerald-500 transition-all outline-none text-base font-bold"
             />

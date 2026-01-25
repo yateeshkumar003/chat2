@@ -41,7 +41,7 @@ const App: React.FC = () => {
       <div className="flex h-[100dvh] w-screen items-center justify-center bg-gray-50 dark:bg-[#0B141A]">
         <div className="relative">
           <div className="h-16 w-16 animate-spin rounded-full border-4 border-emerald-500/20 border-t-emerald-500"></div>
-          <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-emerald-500">S&S</div>
+          <div className="absolute inset-0 flex items-center justify-center text-xs font-bold text-emerald-500 uppercase">CMX</div>
         </div>
       </div>
     );
