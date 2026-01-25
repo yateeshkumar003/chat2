@@ -11,7 +11,7 @@ interface MessageInputProps {
   disabled?: boolean;
   theme: Theme;
   channel?: any;
-  onTypingStatus: (status: 'typing' | 'stop_typing') => void;
+  onTypingStatus: (status: 'typing' | 'stopped_typing') => void;
   onMessageSent: (msg: Message) => void;
   onMessageConfirmed: (tempId: string, confirmedMsg: Message) => void;
 }
@@ -57,7 +57,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
-      onTypingStatus('stop_typing');
+      onTypingStatus('stopped_typing');
       lastTypingTimeRef.current = 0;
     }, 2000);
   };
@@ -67,14 +67,15 @@ const MessageInput: React.FC<MessageInputProps> = ({
     const finalMsg = content.text?.trim();
     if (!finalMsg && !content.imageUrl && !content.audioUrl) return;
 
+    // Reset typing status immediately
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    onTypingStatus('stop_typing');
+    onTypingStatus('stopped_typing');
     lastTypingTimeRef.current = 0;
 
     const messageId = crypto.randomUUID();
     const now = new Date().toISOString();
     
-    const optimisticMsg: Message = {
+    const messagePayload: Message = {
       id: messageId,
       sender_email: senderEmail.toLowerCase(),
       receiver_email: receiverEmail.toLowerCase(),
@@ -86,21 +87,21 @@ const MessageInput: React.FC<MessageInputProps> = ({
       status: 'sending'
     };
 
-    // 1. Show instantly on sender's screen
-    onMessageSent(optimisticMsg);
+    // 1. OPTIMISTIC UPDATE: Show locally instantly
+    onMessageSent(messagePayload);
     setText('');
     setShowEmojiPicker(false);
 
-    // 2. BROADCAST INSTANTLY to recipient (Bypasses DB lag)
+    // 2. FAST-PATH BROADCAST: Send directly via WebSocket to recipient
     if (channel) {
       channel.send({
         type: 'broadcast',
         event: 'new_message',
-        payload: { ...optimisticMsg, status: 'sent' }
+        payload: { ...messagePayload, status: 'sent' }
       });
     }
 
-    // 3. Persist to Database
+    // 3. SLOW-PATH PERSISTENCE: Write to database
     try {
       const { data, error } = await supabase
         .from('messages')
@@ -120,8 +121,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
       if (error) throw error;
       if (data) onMessageConfirmed(messageId, data);
     } catch (err) {
-      console.error('Send error:', err);
-      onMessageConfirmed(messageId, { ...optimisticMsg, status: 'error' });
+      console.error('Send failed:', err);
+      onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
     }
   };
 
@@ -163,14 +164,14 @@ const MessageInput: React.FC<MessageInputProps> = ({
       recorder.start();
       setIsRecording(true);
     } catch (err) { 
-      console.error('Mic access denied');
+      console.error('Mic error');
     }
   };
 
   return (
     <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t dark:border-gray-800 ${disabled ? 'opacity-50' : ''}`}>
       {showEmojiPicker && (
-        <div className="absolute bottom-20 left-0 w-full md:max-w-sm z-50 shadow-2xl rounded-t-2xl overflow-hidden">
+        <div className="absolute bottom-20 left-0 w-full md:max-w-sm z-50 shadow-2xl rounded-t-2xl overflow-hidden animate-in slide-in-from-bottom-5 duration-200">
           <EmojiPicker 
             onEmojiClick={(e) => setText(t => t + e.emoji)} 
             theme={theme === 'dark' ? EmojiTheme.DARK : EmojiTheme.LIGHT} 
@@ -185,9 +186,9 @@ const MessageInput: React.FC<MessageInputProps> = ({
         {!isRecording ? (
           <>
             <div className="flex items-center shrink-0">
-              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500"><Smile size={24} /></button>
-              <button onClick={startRecording} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500"><Mic size={24} /></button>
-              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500"><Paperclip size={24} className="-rotate-45" /></button>
+              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors"><Smile size={24} /></button>
+              <button onClick={startRecording} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors"><Mic size={24} /></button>
+              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors"><Paperclip size={24} className="-rotate-45" /></button>
             </div>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
             <input
@@ -196,20 +197,27 @@ const MessageInput: React.FC<MessageInputProps> = ({
               onChange={handleInputChange}
               onKeyDown={(e) => e.key === 'Enter' && handleSend({ text })}
               placeholder="Type a message"
-              className="flex-1 min-w-0 py-2.5 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-medium text-black dark:text-white"
+              className="flex-1 min-w-0 py-2.5 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-medium text-black dark:text-white placeholder:text-gray-400"
             />
             {(text.trim() || isUploading) && (
-              <button onClick={() => handleSend({ text })} className="p-3 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90" disabled={isUploading}>
+              <button 
+                onClick={() => handleSend({ text })} 
+                className="p-3 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90 flex items-center justify-center shrink-0" 
+                disabled={isUploading}
+              >
                 {isUploading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
               </button>
             )}
           </>
         ) : (
           <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-2 border-2 border-emerald-500/20">
-            <span className="text-sm font-black text-emerald-600 animate-pulse uppercase tracking-widest">Recording...</span>
-            <div className="flex space-x-4">
-              <button onClick={() => setIsRecording(false)} className="text-red-500 font-black text-[10px] uppercase">Cancel</button>
-              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-1 bg-emerald-500 text-white rounded-full shadow-lg"><StopCircle size={20} /></button>
+            <div className="flex items-center space-x-3">
+              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+              <span className="text-sm font-black text-emerald-600 uppercase tracking-widest">{recordingTime}s Recording</span>
+            </div>
+            <div className="flex items-center space-x-4">
+              <button onClick={() => setIsRecording(false)} className="text-red-500 font-black text-[10px] uppercase tracking-tighter hover:underline">Cancel</button>
+              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-2 bg-emerald-500 text-white rounded-full shadow-lg active:scale-90"><StopCircle size={20} /></button>
             </div>
           </div>
         )}
