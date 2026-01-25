@@ -6,16 +6,10 @@ const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYm
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: window.localStorage, // Changed from sessionStorage for better mobile persistence
+    // Changed to sessionStorage to satisfy the requirement: logout on tab close
+    storage: window.sessionStorage, 
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true
   }
 });
-
-/**
- * DATABASE SCHEMA VERIFIED:
- * -- Ensure columns exist
- * ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT false;
- * ALTER TABLE public.messages REPLICA IDENTITY FULL;
- */

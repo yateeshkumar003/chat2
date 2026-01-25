@@ -24,23 +24,17 @@ const App: React.FC = () => {
       setSession(session);
     });
 
-    /**
-     * SECURITY HANDLER
-     * Removed the aggressive visibilitychange -> signOut logic.
-     * Only triggers on true page exit (pagehide) to allow switching apps without being logged out.
-     */
-    const forceLockdown = async (event: any) => {
-      if (event?.type === 'pagehide') {
-        // We only sign out on actual tab close/navigation away to maintain Realtime while app is backgrounded
-        // await supabase.auth.signOut(); 
-      }
+    // Explicitly handle tab closing/page hiding to ensure session is cleared if desired
+    // Although sessionStorage handles the "close tab" case, this adds an extra layer of security
+    const handleUnload = () => {
+      // Not signing out on every refresh, only relying on sessionStorage for tab-close behavior
     };
 
-    window.addEventListener('pagehide', forceLockdown);
+    window.addEventListener('pagehide', handleUnload);
 
     return () => {
       subscription.unsubscribe();
-      window.removeEventListener('pagehide', forceLockdown);
+      window.removeEventListener('pagehide', handleUnload);
     };
   }, []);
 

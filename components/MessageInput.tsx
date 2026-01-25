@@ -71,8 +71,9 @@ const MessageInput: React.FC<MessageInputProps> = ({
     onTypingStatus('stop_typing');
     lastTypingTimeRef.current = 0;
 
-    // Use Numeric string for BigInt safety
-    const messageId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+    // Use a BigInt-safe numeric string (13-digit timestamp + 2 random digits = 15 digits)
+    // Max Postgres BigInt is 19 digits.
+    const messageId = Date.now().toString() + Math.floor(Math.random() * 100).toString().padStart(2, '0');
     const now = new Date().toISOString();
     
     const messagePayload: Message = {
@@ -92,7 +93,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     setText('');
     setShowEmojiPicker(false);
 
-    // 2. Instant WebSocket Broadcast (Must include all necessary fields)
+    // 2. Instant WebSocket Broadcast
     if (channel) {
       channel.send({
         type: 'broadcast',
@@ -119,8 +120,9 @@ const MessageInput: React.FC<MessageInputProps> = ({
         .single();
 
       if (error) {
-        // Fallback for ID collisions or schema issues
+        // Handle constraint errors or type errors gracefully
         if (error.code === '22P02' || error.code === '23505') {
+          console.warn('ID collision or type error, retrying with auto-id...');
           const { data: autoData, error: autoError } = await supabase
             .from('messages')
             .insert([{
@@ -160,7 +162,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
       const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName);
       await handleSend({ imageUrl: publicUrl });
     } catch (err) { 
-      console.error(err); 
+      console.error('Upload failed:', err); 
     } finally { 
       setIsUploading(false); 
       if (fileInputRef.current) fileInputRef.current.value = ''; 
@@ -187,7 +189,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
       recorder.start();
       setIsRecording(true);
     } catch (err) { 
-      console.error('Mic error');
+      console.error('Microphone error:', err);
     }
   };
 
@@ -209,9 +211,9 @@ const MessageInput: React.FC<MessageInputProps> = ({
         {!isRecording ? (
           <>
             <div className="flex items-center shrink-0">
-              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors"><Smile size={24} /></button>
-              <button onClick={startRecording} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors"><Mic size={24} /></button>
-              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors"><Paperclip size={24} className="-rotate-45" /></button>
+              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors" title="Emojis"><Smile size={24} /></button>
+              <button onClick={startRecording} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors" title="Voice Message"><Mic size={24} /></button>
+              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors" title="Upload Image"><Paperclip size={24} className="-rotate-45" /></button>
             </div>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
             <input

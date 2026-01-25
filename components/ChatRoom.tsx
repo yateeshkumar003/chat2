@@ -52,7 +52,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
-  // CRITICAL: String-coerced ID matching to prevent duplication or missing items
+  // CRITICAL: Robust ID coercion and state management for instant message visibility
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' = 'sent') => {
     if (!msg.id) return;
     
@@ -62,10 +62,11 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       
       if (existingIndex !== -1) {
         const updated = [...prev];
+        // Merge properties to preserve status and existing data
         updated[existingIndex] = { 
           ...updated[existingIndex], 
           ...msg, 
-          status: msg.status || 'sent' 
+          status: msg.status || updated[existingIndex].status || 'sent' 
         };
         return updated;
       }
@@ -83,7 +84,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .eq('sender_email', receiverEmail)
         .eq('is_read', false);
     } catch (e) {
-      // Quiet fail for background operations
+      console.debug('Read sync delayed');
     }
   }, [currentUserEmail, receiverEmail]);
 
@@ -98,8 +99,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
 
       if (error) {
         if (error.code === '42P01') setDbError('DB_ERR');
+        setSyncStatus('error');
       } else if (data) {
         setDbError(null);
+        // Ensure strictly filtered view for this specific 1:1 conversation
         const filtered = data.filter(m => {
           const s = (m.sender_email || '').toLowerCase().trim();
           const r = (m.receiver_email || '').toLowerCase().trim();
@@ -119,7 +122,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   useEffect(() => {
     fetchMessages(true);
 
-    // Guaranteed identical Room ID for both users
     const sortedEmails = [currentUserEmail, receiverEmail].sort();
     const safeRoomId = `room_${sortedEmails[0]}_${sortedEmails[1]}`.replace(/[^a-zA-Z0-9_]/g, '');
     
@@ -133,7 +135,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     channelRef.current = channel;
 
     channel
-      // 1. WebSocket Broadcast (Instant Delivery)
+      // 1. Broadcast Listener (High Speed)
       .on('broadcast', { event: 'msg' }, (payload) => {
         if (payload.payload) {
           upsertMessage(payload.payload as Message);
@@ -141,12 +143,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           markMessagesAsRead();
         }
       })
-      // 2. Postgres Changes (Database Sync)
+      // 2. Postgres Listener (Permanent Reliability)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const msg = payload.new as Message;
         const s = (msg.sender_email || '').toLowerCase().trim();
         const r = (msg.receiver_email || '').toLowerCase().trim();
-        // Strict Conversation Filter
+        // Strict filter for current chat room
         if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
           upsertMessage(msg);
           if (r === currentUserEmail) markMessagesAsRead();
@@ -161,7 +163,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           setMessages(prev => prev.filter(m => String(m.id) !== deletedId));
         }
       })
-      // 3. Typing & Presence Status
+      // 3. Presence & Interaction
       .on('presence', { event: 'sync' }, () => {
         const state = channel.presenceState();
         const onlineUsers = Object.values(state).flat().map((u: any) => u.user);
@@ -184,7 +186,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         }
       });
 
-    // Mobile Foreground Recovery
     const onWake = () => {
       if (document.visibilityState === 'visible') {
         fetchMessages(false); 
@@ -307,7 +308,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
             isReceiverOnline={isReceiverOnline}
             onImageClick={setSelectedImage}
             onDeleteMessage={(id, forEveryone) => {
-              if (forEveryone) setDeleteTarget(id);
+              if (forEveryone) setDeleteTarget(String(id));
               else setHiddenMessageIds(prev => [...prev, String(id)]);
             }}
           />
