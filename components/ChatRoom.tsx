@@ -55,6 +55,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
+  // Stable message updater
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' = 'sent') => {
     if (!msg.id) return;
     
@@ -76,13 +77,13 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     });
   }, []);
 
+  // Stable Mark Read logic (Decoupled from state to prevent loops)
   const markMessagesAsRead = useCallback(async () => {
-    // Only proceed if window is actually visible to avoid false read-receipts
     if (document.visibilityState !== 'visible') return;
 
     try {
-      // 1. Instant WebSocket Broadcast for Real-time Blue Ticks
-      if (channelRef.current && syncStatus === 'synced') {
+      // Send real-time broadcast ONLY if channel is ready
+      if (channelRef.current && channelRef.current.state === 'joined') {
         channelRef.current.send({
           type: 'broadcast',
           event: 'read_receipt',
@@ -90,7 +91,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         });
       }
 
-      // 2. Persistent Database Update
+      // Batch update database
       await supabase
         .from('messages')
         .update({ is_read: true })
@@ -98,9 +99,13 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .eq('sender_email', receiverEmail)
         .eq('is_read', false);
     } catch (e) {
-      console.debug('Read sync delayed');
+      console.debug('Read sync failed/delayed');
     }
-  }, [currentUserEmail, receiverEmail, syncStatus]);
+  }, [currentUserEmail, receiverEmail]);
+
+  // Ref to hold current mark read logic for the effect to use without re-triggering
+  const markAsReadRef = useRef(markMessagesAsRead);
+  useEffect(() => { markAsReadRef.current = markMessagesAsRead; }, [markMessagesAsRead]);
 
   const fetchMessages = useCallback(async (showLoading = true) => {
     if (showLoading) setLoadingHistory(true);
@@ -122,16 +127,16 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           return (s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail);
         });
         setMessages(filtered.map(m => ({ ...m, status: 'sent' })));
-        // Auto-read on fetch if focused
-        markMessagesAsRead();
+        markAsReadRef.current();
       }
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
       if (showLoading) setLoadingHistory(false);
     }
-  }, [currentUserEmail, receiverEmail, markMessagesAsRead]);
+  }, [currentUserEmail, receiverEmail]);
 
+  // Banner logic
   useEffect(() => {
     let timer: any;
     if (syncStatus === 'connecting') {
@@ -143,6 +148,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     return () => clearTimeout(timer);
   }, [syncStatus]);
 
+  // Connection Setup (Stable Dependencies)
   useEffect(() => {
     fetchMessages(true);
 
@@ -163,12 +169,11 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         if (payload.payload) {
           upsertMessage(payload.payload as Message);
           setIsTyping(false);
-          markMessagesAsRead();
+          markAsReadRef.current();
         }
       })
       .on('broadcast', { event: 'read_receipt' }, (payload) => {
         if (payload.payload?.reader === receiverEmail) {
-          // INTERCEPT: Receiver read our messages, turn them all blue locally
           setMessages(prev => prev.map(m => 
             m.sender_email === currentUserEmail ? { ...m, is_read: true } : m
           ));
@@ -180,7 +185,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         const r = (msg.receiver_email || '').toLowerCase().trim();
         if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
           upsertMessage(msg);
-          if (r === currentUserEmail) markMessagesAsRead();
+          if (r === currentUserEmail) markAsReadRef.current();
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
@@ -209,18 +214,25 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         if (status === 'SUBSCRIBED') {
           setSyncStatus('synced');
           await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
-          // Ensure we send a read receipt upon successful connection if active
-          markMessagesAsRead();
-        } else {
+          markAsReadRef.current();
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           setSyncStatus('connecting');
         }
       });
 
+    return () => {
+      supabase.removeChannel(channel);
+      channelRef.current = null;
+    };
+  }, [currentUserEmail, receiverEmail, fetchMessages, upsertMessage]);
+
+  // Separate Effect for Visibility/Wake listeners to prevent re-subscriptions
+  useEffect(() => {
     const onWake = () => {
       if (document.visibilityState === 'visible') {
         fetchMessages(false); 
-        markMessagesAsRead();
-        if (channelRef.current) {
+        markAsReadRef.current();
+        if (channelRef.current && channelRef.current.state === 'joined') {
           channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
         }
       }
@@ -228,13 +240,11 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
 
     window.addEventListener('visibilitychange', onWake);
     window.addEventListener('focus', onWake);
-
     return () => {
-      supabase.removeChannel(channel);
       window.removeEventListener('visibilitychange', onWake);
       window.removeEventListener('focus', onWake);
     };
-  }, [currentUserEmail, receiverEmail, fetchMessages, upsertMessage, markMessagesAsRead]);
+  }, [currentUserEmail, fetchMessages]);
 
   const sendTypingStatus = (status: 'typing' | 'stop_typing') => {
     if (channelRef.current && syncStatus === 'synced') {
@@ -264,8 +274,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         setDeleteTarget(null);
       }
     } catch (err: any) {
-      console.error('Deletion failed:', err);
-      setDeletionError(err.message || 'Network error: Failed to delete message');
+      setDeletionError(err.message || 'Deletion failed');
     } finally {
       setIsDeleting(false);
     }
@@ -308,21 +317,21 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         {showConnectingBanner && !loadingHistory && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-amber-500/90 backdrop-blur-md text-white text-[9px] font-black px-4 py-1.5 rounded-full flex items-center space-x-2 shadow-xl animate-in fade-in slide-in-from-top-2 duration-300">
             <RefreshCcw size={10} className="animate-spin" />
-            <span className="tracking-widest uppercase">Connecting to Node...</span>
+            <span className="tracking-widest uppercase">Connecting...</span>
           </div>
         )}
 
         {(showClearConfirm || deleteTarget) && (
-          <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-            <div className={`bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/10 transition-transform ${deletionError ? 'shake-animation border-red-500/50' : 'scale-100 animate-in zoom-in-95 duration-150'}`}>
+          <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
+            <div className={`bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/10 ${deletionError ? 'shake-animation border-red-500/50' : ''}`}>
               <div className="p-8 text-center space-y-4">
-                <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto ${deletionError ? 'bg-red-50 dark:bg-red-950/30 text-red-500' : 'bg-red-50 dark:bg-red-950/30 text-red-500'}`}>
+                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto bg-red-50 dark:bg-red-950/30 text-red-500">
                   {deletionError ? <XCircle size={32} /> : <AlertTriangle size={32} />}
                 </div>
                 <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">
-                  {deletionError ? 'Action Failed' : 'Confirm?'}
+                  {deletionError ? 'Failed' : 'Confirm?'}
                 </h3>
-                <p className={`text-[10px] font-bold uppercase tracking-widest leading-relaxed ${deletionError ? 'text-red-500' : 'text-gray-400'}`}>
+                <p className={`text-[10px] font-bold uppercase tracking-widest ${deletionError ? 'text-red-500' : 'text-gray-400'}`}>
                   {deletionError || 'This action cannot be undone.'}
                 </p>
               </div>
@@ -330,14 +339,14 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
                 <button 
                   disabled={isDeleting}
                   onClick={() => { setShowClearConfirm(false); setDeleteTarget(null); setDeletionError(null); }} 
-                  className="flex-1 py-4 text-[10px] font-black uppercase text-gray-400 border-r dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
+                  className="flex-1 py-4 text-[10px] font-black uppercase text-gray-400 border-r dark:border-gray-800"
                 >
                   Cancel
                 </button>
                 <button 
                   disabled={isDeleting}
                   onClick={handleConfirmedDeletion} 
-                  className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors flex items-center justify-center space-x-2 disabled:opacity-50"
+                  className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 flex items-center justify-center space-x-2"
                 >
                   {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <span>Confirm</span>}
                 </button>
@@ -346,22 +355,13 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           </div>
         )}
 
-        {isClearing && (
-          <div className="absolute inset-0 z-[110] bg-white/50 dark:bg-black/50 backdrop-blur-md flex items-center justify-center">
-            <Loader2 size={40} className="animate-spin text-emerald-500" />
-          </div>
-        )}
-
         {loadingHistory ? (
-          <div className="flex-1 flex flex-col items-center justify-center space-y-4 animate-in fade-in duration-500">
-            <div className="relative">
-              <Loader2 className="animate-spin text-emerald-500" size={48} />
-              <div className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-emerald-500 uppercase tracking-tighter">Sync</div>
-            </div>
-            <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-[0.4em]">Establishing encrypted tunnel</p>
+          <div className="flex-1 flex flex-col items-center justify-center space-y-4">
+            <Loader2 className="animate-spin text-emerald-500" size={48} />
+            <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-[0.4em]">Syncing Encrypted History</p>
           </div>
         ) : visibleMessages.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center opacity-30 px-6 text-center animate-in zoom-in duration-500">
+          <div className="flex-1 flex flex-col items-center justify-center opacity-30 px-6 text-center">
             <MessageSquareOff size={80} className="text-emerald-500 mb-4" />
             <p className="text-[10px] font-black uppercase tracking-[0.3em]">No Messages Yet</p>
           </div>

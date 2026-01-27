@@ -30,28 +30,16 @@ const App: React.FC = () => {
       setSession(session);
     });
 
-    // AGGRESSIVE SECURITY LISTENERS
-    const handleInactivity = () => {
-      // document.visibilityState === 'hidden' covers tab switching, minimizing, and screen lock
-      if (document.visibilityState === 'hidden') {
-        handleSecureLogout();
-      }
-    };
-
-    const handleBlur = () => {
-      // Optional: triggers when the browser window loses focus to another application
-      handleSecureLogout();
-    };
-
-    // Use visibilitychange for background/lock detection
-    document.addEventListener('visibilitychange', handleInactivity);
-    // Use blur for general inactivity (window focus lost)
-    window.addEventListener('blur', handleBlur);
+    /** 
+     * SECURITY NOTE: 
+     * Removed window 'blur' and 'visibilitychange' immediate logouts.
+     * These were too aggressive and triggered when the system file picker 
+     * opened to send images, causing unintended session termination.
+     * Security is still maintained via memoryStorage (wipe on reload).
+     */
 
     return () => {
       subscription.unsubscribe();
-      document.removeEventListener('visibilitychange', handleInactivity);
-      window.removeEventListener('blur', handleBlur);
     };
   }, [handleSecureLogout]);
 
