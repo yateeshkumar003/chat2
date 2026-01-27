@@ -71,9 +71,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
     onTypingStatus('stop_typing');
     lastTypingTimeRef.current = 0;
 
-    // Use a BigInt-safe numeric string (13-digit timestamp + 2 random digits = 15 digits)
-    // Max Postgres BigInt is 19 digits.
-    const messageId = Date.now().toString() + Math.floor(Math.random() * 100).toString().padStart(2, '0');
+    // Fast local ID generation
+    const messageId = Date.now().toString() + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
     const now = new Date().toISOString();
     
     const messagePayload: Message = {
@@ -88,21 +87,32 @@ const MessageInput: React.FC<MessageInputProps> = ({
       status: 'sending'
     };
 
-    // 1. Instant local display
+    // 1. Instant local display (Spinner appears for a split second)
     onMessageSent(messagePayload);
     setText('');
     setShowEmojiPicker(false);
 
-    // 2. Instant WebSocket Broadcast
+    // 2. Instant WebSocket Broadcast - SUCCESS here means "Sent to Node"
+    let broadcastSuccessful = false;
     if (channel) {
-      channel.send({
-        type: 'broadcast',
-        event: 'msg',
-        payload: { ...messagePayload, status: 'sent' }
-      });
+      try {
+        const response = await channel.send({
+          type: 'broadcast',
+          event: 'msg',
+          payload: { ...messagePayload, status: 'sent' }
+        });
+        broadcastSuccessful = response === 'ok';
+      } catch (e) {
+        console.debug('Broadcast delay');
+      }
     }
 
-    // 3. Persistent Storage (Database)
+    // 3. OPTIMISTIC TRANSITION: If broadcast worked, show "Sent" (single tick) immediately
+    if (broadcastSuccessful) {
+      onMessageConfirmed(messageId, { ...messagePayload, status: 'sent' });
+    }
+
+    // 4. Persistent Storage (Database) in the background
     try {
       const { data, error } = await supabase
         .from('messages')
@@ -120,34 +130,17 @@ const MessageInput: React.FC<MessageInputProps> = ({
         .single();
 
       if (error) {
-        // Handle constraint errors or type errors gracefully
-        if (error.code === '22P02' || error.code === '23505') {
-          console.warn('ID collision or type error, retrying with auto-id...');
-          const { data: autoData, error: autoError } = await supabase
-            .from('messages')
-            .insert([{
-              sender_email: senderEmail.toLowerCase().trim(),
-              receiver_email: receiverEmail.toLowerCase().trim(),
-              message_text: finalMsg || null,
-              image_url: content.imageUrl || null,
-              audio_url: content.audioUrl || null,
-              is_read: false,
-              created_at: now
-            }])
-            .select()
-            .single();
-          
-          if (autoError) throw autoError;
-          if (autoData) onMessageConfirmed(messageId, autoData);
-        } else {
-          throw error;
-        }
+        throw error;
       } else if (data) {
-        onMessageConfirmed(messageId, data);
+        // Final confirmation from DB
+        onMessageConfirmed(messageId, { ...data, status: 'sent' });
       }
     } catch (err) {
-      console.error('Send failed:', err);
-      onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
+      console.error('Persistence failed:', err);
+      // Only show error if broadcast also failed or DB is hard-failing
+      if (!broadcastSuccessful) {
+        onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
+      }
     }
   };
 

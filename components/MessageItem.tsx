@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { format } from 'date-fns';
 import { Message } from '../types';
 import { Play, Pause, Check, CheckCheck, Loader2, Image as ImageIcon, AlertCircle, MoreHorizontal, Trash2, UserMinus } from 'lucide-react';
@@ -47,32 +47,75 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
 
   const renderStatus = () => {
     if (!isOwn) return null;
-    if (message.status === 'error') return <AlertCircle size={14} className="text-red-500" />;
-    if (message.status === 'sending') return <Loader2 size={12} className="animate-spin text-gray-400" />;
     
-    // Read Status (Blue Ticks) - explicitly check for true
-    if (message.is_read === true) {
-      return <CheckCheck size={14} className="text-sky-500" />;
-    }
-    
-    // Delivered (Double Gray Ticks) - Shown if recipient is currently online
-    if (isReceiverOnline) {
-      return <CheckCheck size={14} className="text-gray-400 dark:text-gray-500" />;
+    // 1. Error State: Maximum Prominence
+    if (message.status === 'error') {
+      return (
+        <div className="flex items-center space-x-1.5 ml-2 px-2 py-0.5 bg-red-100 dark:bg-red-900/40 rounded-full border border-red-200 dark:border-red-800 transition-all">
+          <AlertCircle size={10} className="text-red-600 dark:text-red-400" strokeWidth={3} />
+          <span className="text-[7px] font-black uppercase text-red-600 dark:text-red-400 tracking-tighter">Failed</span>
+        </div>
+      );
     }
 
-    // Sent (Single Gray Tick)
-    return <Check size={14} className="text-gray-400 dark:text-gray-500" />;
+    // 2. Sending State
+    if (message.status === 'sending') {
+      return (
+        <div className="flex items-center space-x-1 ml-1.5 opacity-60">
+          <span className="text-[7px] font-black uppercase text-gray-400 tracking-widest">Sending</span>
+          <Loader2 size={11} className="animate-spin text-gray-400" />
+        </div>
+      );
+    }
+    
+    // 3. Read Status: Double Blue Ticks
+    if (message.is_read === true) {
+      return (
+        <div className="flex items-center ml-1 transition-all duration-300">
+          <CheckCheck size={18} className="text-[#34B7F1]" strokeWidth={3} />
+        </div>
+      );
+    }
+    
+    // 4. Delivered Status: Double Gray Ticks (Shown if receiver is online)
+    // This provides instant feedback that the recipient has the app open/active
+    if (isReceiverOnline) {
+      return (
+        <div className="flex items-center ml-1 transition-all duration-300">
+          <CheckCheck size={18} className="text-gray-400 dark:text-gray-500" strokeWidth={2.4} />
+        </div>
+      );
+    }
+
+    // 5. Sent Status: Single Gray Tick (Receiver is offline)
+    return (
+      <div className="flex items-center ml-1 transition-all duration-300">
+        <Check size={18} className="text-gray-400 dark:text-gray-500" strokeWidth={2.4} />
+      </div>
+    );
+  };
+
+  const getBubbleClasses = () => {
+    const baseClasses = "max-w-[85%] md:max-w-[70%] rounded-[1.25rem] p-1 shadow-sm relative ring-1 transition-all duration-300 transform";
+    const shapeClasses = isOwn ? "rounded-tr-none" : "rounded-tl-none";
+    
+    let colorClasses = "";
+    if (isOwn) {
+      if (message.status === 'error') {
+        colorClasses = "bg-red-50 dark:bg-red-950/40 ring-red-500/50 shake-animation border-r-4 border-r-red-500";
+      } else {
+        colorClasses = "bg-whatsapp-sender dark:bg-whatsapp-senderDark ring-black/5 dark:ring-white/5";
+      }
+    } else {
+      colorClasses = "bg-whatsapp-receiver dark:bg-whatsapp-receiverDark ring-black/5 dark:ring-white/5";
+    }
+    
+    return `${baseClasses} ${shapeClasses} ${colorClasses}`;
   };
 
   return (
     <div className={`flex group/msg ${isOwn ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-1 duration-300 relative`}>
-      <div 
-        className={`max-w-[85%] md:max-w-[70%] rounded-[1.25rem] p-1 shadow-sm relative ring-1 ring-black/5 dark:ring-white/5 transition-all ${
-          isOwn 
-            ? (message.status === 'error' ? 'bg-red-50 dark:bg-red-950/30 ring-red-200' : 'bg-whatsapp-sender dark:bg-whatsapp-senderDark') 
-            : 'bg-whatsapp-receiver dark:bg-whatsapp-receiverDark'
-        } ${isOwn ? 'rounded-tr-none' : 'rounded-tl-none'}`}
-      >
+      <div className={getBubbleClasses()}>
         <div className="p-1 flex flex-col relative">
           <button 
             onClick={() => setShowMenu(!showMenu)}
@@ -128,13 +171,13 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
           )}
 
           {message.message_text && (
-            <p className={`px-3 py-1.5 pr-6 text-sm md:text-base leading-relaxed break-words font-medium text-black dark:text-gray-100`}>
+            <p className={`px-3 py-1.5 pr-8 text-sm md:text-base leading-relaxed break-words font-medium ${isOwn && message.status === 'error' ? 'text-red-800 dark:text-red-200' : 'text-black dark:text-gray-100'}`}>
               {message.message_text}
             </p>
           )}
 
-          <div className="flex items-center justify-end space-x-1.5 px-2 pb-0.5 mt-0.5">
-            <span className={`text-[9px] font-black uppercase text-black/50 dark:text-white/40`}>
+          <div className="flex items-center justify-end space-x-0.5 px-2 pb-0.5 mt-0.5 select-none">
+            <span className={`text-[9px] font-black uppercase ${isOwn && message.status === 'error' ? 'text-red-500/70' : 'text-black/50 dark:text-white/40'}`}>
               {format(new Date(message.created_at), 'HH:mm')}
             </span>
             {renderStatus()}
@@ -145,4 +188,5 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
   );
 };
 
-export default MessageItem;
+// Exporting memoized component for better performance (no lag)
+export default memo(MessageItem);

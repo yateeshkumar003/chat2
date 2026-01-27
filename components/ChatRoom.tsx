@@ -45,6 +45,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const [isClearing, setIsClearing] = useState(false);
   const [clearSuccess, setClearSuccess] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'connecting' | 'synced' | 'error'>('connecting');
+  const [showConnectingBanner, setShowConnectingBanner] = useState(false);
   
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -62,7 +63,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       
       if (existingIndex !== -1) {
         const updated = [...prev];
-        // Merge properties to preserve status and existing data
         updated[existingIndex] = { 
           ...updated[existingIndex], 
           ...msg, 
@@ -102,7 +102,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         setSyncStatus('error');
       } else if (data) {
         setDbError(null);
-        // Ensure strictly filtered view for this specific 1:1 conversation
         const filtered = data.filter(m => {
           const s = (m.sender_email || '').toLowerCase().trim();
           const r = (m.receiver_email || '').toLowerCase().trim();
@@ -117,6 +116,18 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       if (showLoading) setLoadingHistory(false);
     }
   }, [currentUserEmail, receiverEmail, markMessagesAsRead]);
+
+  // Handle "Connecting..." UI delay to prevent annoying flicker
+  useEffect(() => {
+    let timer: any;
+    if (syncStatus === 'connecting') {
+      timer = setTimeout(() => setShowConnectingBanner(true), 1500);
+    } else {
+      setShowConnectingBanner(false);
+      if (timer) clearTimeout(timer);
+    }
+    return () => clearTimeout(timer);
+  }, [syncStatus]);
 
   // STABLE REALTIME SUBSCRIPTION
   useEffect(() => {
@@ -135,7 +146,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     channelRef.current = channel;
 
     channel
-      // 1. Broadcast Listener (High Speed)
       .on('broadcast', { event: 'msg' }, (payload) => {
         if (payload.payload) {
           upsertMessage(payload.payload as Message);
@@ -143,12 +153,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           markMessagesAsRead();
         }
       })
-      // 2. Postgres Listener (Permanent Reliability)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const msg = payload.new as Message;
         const s = (msg.sender_email || '').toLowerCase().trim();
         const r = (msg.receiver_email || '').toLowerCase().trim();
-        // Strict filter for current chat room
         if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
           upsertMessage(msg);
           if (r === currentUserEmail) markMessagesAsRead();
@@ -163,7 +171,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           setMessages(prev => prev.filter(m => String(m.id) !== deletedId));
         }
       })
-      // 3. Presence & Interaction
       .on('presence', { event: 'sync' }, () => {
         const state = channel.presenceState();
         const onlineUsers = Object.values(state).flat().map((u: any) => u.user);
@@ -249,10 +256,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       />
       
       <div className="flex-1 overflow-hidden relative flex flex-col">
-        {syncStatus === 'connecting' && !loadingHistory && (
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-amber-500 text-white text-[9px] font-black px-4 py-1.5 rounded-full flex items-center space-x-2 shadow-xl animate-pulse">
+        {showConnectingBanner && !loadingHistory && (
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-amber-500/90 backdrop-blur-md text-white text-[9px] font-black px-4 py-1.5 rounded-full flex items-center space-x-2 shadow-xl animate-in fade-in slide-in-from-top-2 duration-300">
             <RefreshCcw size={10} className="animate-spin" />
-            <span className="tracking-widest uppercase">Connecting...</span>
+            <span className="tracking-widest uppercase">Connecting to Node...</span>
           </div>
         )}
 
@@ -295,9 +302,15 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         )}
 
         {loadingHistory ? (
-          <div className="flex-1 flex items-center justify-center"><Loader2 className="animate-spin text-emerald-500" size={40} /></div>
+          <div className="flex-1 flex flex-col items-center justify-center space-y-4 animate-in fade-in duration-500">
+            <div className="relative">
+              <Loader2 className="animate-spin text-emerald-500" size={48} />
+              <div className="absolute inset-0 flex items-center justify-center text-[8px] font-black text-emerald-500 uppercase tracking-tighter">Sync</div>
+            </div>
+            <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-[0.4em]">Establishing encrypted tunnel</p>
+          </div>
         ) : visibleMessages.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center opacity-30 px-6 text-center">
+          <div className="flex-1 flex flex-col items-center justify-center opacity-30 px-6 text-center animate-in zoom-in duration-500">
             <MessageSquareOff size={80} className="text-emerald-500 mb-4" />
             <p className="text-[10px] font-black uppercase tracking-[0.3em]">No Messages Yet</p>
           </div>
