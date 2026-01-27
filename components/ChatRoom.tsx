@@ -77,7 +77,20 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   }, []);
 
   const markMessagesAsRead = useCallback(async () => {
+    // Only proceed if window is actually visible to avoid false read-receipts
+    if (document.visibilityState !== 'visible') return;
+
     try {
+      // 1. Instant WebSocket Broadcast for Real-time Blue Ticks
+      if (channelRef.current && syncStatus === 'synced') {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'read_receipt',
+          payload: { reader: currentUserEmail }
+        });
+      }
+
+      // 2. Persistent Database Update
       await supabase
         .from('messages')
         .update({ is_read: true })
@@ -87,7 +100,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     } catch (e) {
       console.debug('Read sync delayed');
     }
-  }, [currentUserEmail, receiverEmail]);
+  }, [currentUserEmail, receiverEmail, syncStatus]);
 
   const fetchMessages = useCallback(async (showLoading = true) => {
     if (showLoading) setLoadingHistory(true);
@@ -109,6 +122,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           return (s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail);
         });
         setMessages(filtered.map(m => ({ ...m, status: 'sent' })));
+        // Auto-read on fetch if focused
         markMessagesAsRead();
       }
     } catch (e) {
@@ -152,6 +166,14 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           markMessagesAsRead();
         }
       })
+      .on('broadcast', { event: 'read_receipt' }, (payload) => {
+        if (payload.payload?.reader === receiverEmail) {
+          // INTERCEPT: Receiver read our messages, turn them all blue locally
+          setMessages(prev => prev.map(m => 
+            m.sender_email === currentUserEmail ? { ...m, is_read: true } : m
+          ));
+        }
+      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const msg = payload.new as Message;
         const s = (msg.sender_email || '').toLowerCase().trim();
@@ -187,6 +209,8 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         if (status === 'SUBSCRIBED') {
           setSyncStatus('synced');
           await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
+          // Ensure we send a read receipt upon successful connection if active
+          markMessagesAsRead();
         } else {
           setSyncStatus('connecting');
         }
@@ -195,6 +219,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     const onWake = () => {
       if (document.visibilityState === 'visible') {
         fetchMessages(false); 
+        markMessagesAsRead();
         if (channelRef.current) {
           channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
         }
