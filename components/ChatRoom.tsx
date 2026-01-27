@@ -7,7 +7,7 @@ import MessageList from './MessageList';
 import MessageInput from './MessageInput';
 import ImageModal from './ImageModal';
 import WallpaperModal from './WallpaperModal';
-import { Loader2, MessageSquareOff, AlertTriangle, RefreshCcw } from 'lucide-react';
+import { Loader2, MessageSquareOff, AlertTriangle, RefreshCcw, XCircle } from 'lucide-react';
 
 interface ChatRoomProps {
   session: any;
@@ -43,6 +43,8 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const [isTyping, setIsTyping] = useState(false);
   const [isReceiverOnline, setIsReceiverOnline] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deletionError, setDeletionError] = useState<string | null>(null);
   const [clearSuccess, setClearSuccess] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'connecting' | 'synced' | 'error'>('connecting');
   const [showConnectingBanner, setShowConnectingBanner] = useState(false);
@@ -53,7 +55,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
-  // CRITICAL: Robust ID coercion and state management for instant message visibility
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' = 'sent') => {
     if (!msg.id) return;
     
@@ -117,7 +118,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   }, [currentUserEmail, receiverEmail, markMessagesAsRead]);
 
-  // Handle "Connecting..." UI delay to prevent annoying flicker
   useEffect(() => {
     let timer: any;
     if (syncStatus === 'connecting') {
@@ -129,7 +129,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     return () => clearTimeout(timer);
   }, [syncStatus]);
 
-  // STABLE REALTIME SUBSCRIPTION
   useEffect(() => {
     fetchMessages(true);
 
@@ -222,6 +221,31 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   };
 
+  const handleConfirmedDeletion = async () => {
+    setIsDeleting(true);
+    setDeletionError(null);
+    try {
+      if (showClearConfirm) {
+        const { error } = await supabase.from('messages').delete().or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
+        if (error) throw error;
+        setMessages([]);
+        setShowClearConfirm(false);
+        setClearSuccess(true);
+        setTimeout(() => setClearSuccess(false), 1500);
+      } else if (deleteTarget) {
+        const id = deleteTarget;
+        const { error } = await supabase.from('messages').delete().eq('id', id);
+        if (error) throw error;
+        setDeleteTarget(null);
+      }
+    } catch (err: any) {
+      console.error('Deletion failed:', err);
+      setDeletionError(err.message || 'Network error: Failed to delete message');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const getWallpaperClass = () => {
     if (wallpaper === 'default') return theme === 'dark' ? 'chat-wallpaper-dark' : 'chat-wallpaper-light';
     const wpMap: Record<string, string> = {
@@ -250,7 +274,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         isTyping={isTyping}
         isOnline={isReceiverOnline}
         syncStatus={syncStatus}
-        onClearChat={() => setShowClearConfirm(true)}
+        onClearChat={() => { setDeletionError(null); setShowClearConfirm(true); }}
         onLogout={() => supabase.auth.signOut()}
         onOpenWallpaper={() => setShowWallpaperModal(true)}
       />
@@ -265,31 +289,33 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
 
         {(showClearConfirm || deleteTarget) && (
           <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-            <div className="bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/10 scale-100 animate-in zoom-in-95 duration-150">
+            <div className={`bg-white dark:bg-[#111B21] w-full max-w-xs rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/10 transition-transform ${deletionError ? 'shake-animation border-red-500/50' : 'scale-100 animate-in zoom-in-95 duration-150'}`}>
               <div className="p-8 text-center space-y-4">
-                <div className="w-16 h-16 bg-red-50 dark:bg-red-950/30 rounded-full flex items-center justify-center mx-auto text-red-500">
-                  <AlertTriangle size={32} />
+                <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto ${deletionError ? 'bg-red-50 dark:bg-red-950/30 text-red-500' : 'bg-red-50 dark:bg-red-950/30 text-red-500'}`}>
+                  {deletionError ? <XCircle size={32} /> : <AlertTriangle size={32} />}
                 </div>
-                <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">Confirm?</h3>
-                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-relaxed">This action cannot be undone.</p>
+                <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase tracking-tight">
+                  {deletionError ? 'Action Failed' : 'Confirm?'}
+                </h3>
+                <p className={`text-[10px] font-bold uppercase tracking-widest leading-relaxed ${deletionError ? 'text-red-500' : 'text-gray-400'}`}>
+                  {deletionError || 'This action cannot be undone.'}
+                </p>
               </div>
               <div className="flex border-t dark:border-gray-800">
-                <button onClick={() => { setShowClearConfirm(false); setDeleteTarget(null); }} className="flex-1 py-4 text-[10px] font-black uppercase text-gray-400 border-r dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">Cancel</button>
-                <button onClick={async () => {
-                  if (showClearConfirm) {
-                    setShowClearConfirm(false);
-                    setIsClearing(true);
-                    await supabase.from('messages').delete().or(`sender_email.eq.${currentUserEmail},receiver_email.eq.${currentUserEmail}`);
-                    setMessages([]);
-                    setIsClearing(false);
-                    setClearSuccess(true);
-                    setTimeout(() => setClearSuccess(false), 1500);
-                  } else {
-                    const id = deleteTarget;
-                    setDeleteTarget(null);
-                    await supabase.from('messages').delete().eq('id', id);
-                  }
-                }} className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">Confirm</button>
+                <button 
+                  disabled={isDeleting}
+                  onClick={() => { setShowClearConfirm(false); setDeleteTarget(null); setDeletionError(null); }} 
+                  className="flex-1 py-4 text-[10px] font-black uppercase text-gray-400 border-r dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button 
+                  disabled={isDeleting}
+                  onClick={handleConfirmedDeletion} 
+                  className="flex-1 py-4 text-[10px] font-black uppercase text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors flex items-center justify-center space-x-2 disabled:opacity-50"
+                >
+                  {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <span>Confirm</span>}
+                </button>
               </div>
             </div>
           </div>
@@ -321,8 +347,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
             isReceiverOnline={isReceiverOnline}
             onImageClick={setSelectedImage}
             onDeleteMessage={(id, forEveryone) => {
-              if (forEveryone) setDeleteTarget(String(id));
-              else setHiddenMessageIds(prev => [...prev, String(id)]);
+              if (forEveryone) {
+                setDeletionError(null);
+                setDeleteTarget(String(id));
+              } else {
+                setHiddenMessageIds(prev => [...prev, String(id)]);
+              }
             }}
           />
         )}

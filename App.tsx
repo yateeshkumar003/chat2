@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './supabaseClient';
 import Auth from './components/Auth';
 import ChatRoom from './components/ChatRoom';
@@ -11,6 +11,12 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState<Theme>(() => {
     return (localStorage.getItem('theme') as Theme) || 'light';
   });
+
+  // Centralized logout function
+  const handleSecureLogout = useCallback(async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+  }, []);
 
   useEffect(() => {
     // Initial session check
@@ -24,19 +30,30 @@ const App: React.FC = () => {
       setSession(session);
     });
 
-    // Explicitly handle tab closing/page hiding to ensure session is cleared if desired
-    // Although sessionStorage handles the "close tab" case, this adds an extra layer of security
-    const handleUnload = () => {
-      // Not signing out on every refresh, only relying on sessionStorage for tab-close behavior
+    // AGGRESSIVE SECURITY LISTENERS
+    const handleInactivity = () => {
+      // document.visibilityState === 'hidden' covers tab switching, minimizing, and screen lock
+      if (document.visibilityState === 'hidden') {
+        handleSecureLogout();
+      }
     };
 
-    window.addEventListener('pagehide', handleUnload);
+    const handleBlur = () => {
+      // Optional: triggers when the browser window loses focus to another application
+      handleSecureLogout();
+    };
+
+    // Use visibilitychange for background/lock detection
+    document.addEventListener('visibilitychange', handleInactivity);
+    // Use blur for general inactivity (window focus lost)
+    window.addEventListener('blur', handleBlur);
 
     return () => {
       subscription.unsubscribe();
-      window.removeEventListener('pagehide', handleUnload);
+      document.removeEventListener('visibilitychange', handleInactivity);
+      window.removeEventListener('blur', handleBlur);
     };
-  }, []);
+  }, [handleSecureLogout]);
 
   useEffect(() => {
     if (theme === 'dark') {
