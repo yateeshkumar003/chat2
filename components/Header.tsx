@@ -2,7 +2,7 @@
 import React from 'react';
 import { Sun, Moon, Trash2, LogOut, Palette, RefreshCw, ShieldCheck } from 'lucide-react';
 import { UserProfile, Theme } from '../types';
-import { format, isToday, isYesterday } from 'date-fns';
+import { format, isToday } from 'date-fns';
 
 interface HeaderProps {
   receiver: UserProfile;
@@ -30,15 +30,20 @@ const Header: React.FC<HeaderProps> = ({
   onOpenWallpaper 
 }) => {
   const formatLastSeen = (dateStr: string | null) => {
-    if (!dateStr) return 'Last seen recently';
+    if (!dateStr) return 'Offline';
     try {
       const date = new Date(dateStr);
-      const timeStr = format(date, 'HH:mm');
-      if (isToday(date)) return `Last seen at ${timeStr}`;
-      if (isYesterday(date)) return `Last seen yesterday at ${timeStr}`;
-      return `Last seen on ${format(date, 'MMM d')} at ${timeStr}`;
+      const timeStr = format(date, 'h:mm a'); // Exact 12-hour format with AM/PM
+      
+      if (isToday(date)) {
+        return `Last seen at ${timeStr}`;
+      }
+      
+      // Exact date and time for any day that is not today
+      // Format: Last seen on Jan 1, 2024 at 10:30 AM
+      return `Last seen on ${format(date, 'MMM d, yyyy')} at ${timeStr}`;
     } catch {
-      return 'Last seen recently';
+      return 'Offline';
     }
   };
 

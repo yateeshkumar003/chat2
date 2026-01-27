@@ -1,8 +1,8 @@
 
 import React, { useState, useRef, useEffect, memo } from 'react';
 import { format } from 'date-fns';
-import { Message, USERS } from '../types';
-import { Play, Pause, Check, CheckCheck, Loader2, Image as ImageIcon, AlertCircle, MoreHorizontal, Trash2, UserMinus, ImageOff, Reply, Smile } from 'lucide-react';
+import { Message } from '../types';
+import { Play, Pause, Check, CheckCheck, Loader2, AlertCircle, MoreHorizontal, Trash2, UserMinus, ImageOff } from 'lucide-react';
 
 interface MessageItemProps {
   message: Message;
@@ -11,60 +11,23 @@ interface MessageItemProps {
   isReceiverOnline: boolean;
   onImageClick: (url: string) => void;
   onDeleteMessage: (id: string, forEveryone: boolean) => void;
-  onReply: () => void;
-  onReaction: (emoji: string | null) => void;
 }
-
-const REACTION_OPTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 const MessageItem: React.FC<MessageItemProps> = ({ 
   message, 
-  allMessages,
   isOwn, 
   isReceiverOnline, 
   onImageClick, 
-  onDeleteMessage,
-  onReply,
-  onReaction
+  onDeleteMessage
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
-  const [showReactionPicker, setShowReactionPicker] = useState(false);
-  const [swipeOffset, setSwipeOffset] = useState(0);
-  const [isSwiping, setIsSwiping] = useState(false);
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const touchStartRef = useRef<number>(0);
-
-  // Swipe logic
-  const onTouchStart = (e: React.TouchEvent) => {
-    touchStartRef.current = e.touches[0].clientX;
-  };
-
-  const onTouchMove = (e: React.TouchEvent) => {
-    const currentX = e.touches[0].clientX;
-    const diff = currentX - touchStartRef.current;
-    
-    if (diff > 0) {
-      setSwipeOffset(Math.min(diff, 100));
-      setIsSwiping(true);
-      if (diff > 80) {
-        if ('vibrate' in navigator) navigator.vibrate(10);
-      }
-    }
-  };
-
-  const onTouchEnd = () => {
-    if (swipeOffset > 80) {
-      onReply();
-    }
-    setSwipeOffset(0);
-    setIsSwiping(false);
-  };
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -85,18 +48,20 @@ const MessageItem: React.FC<MessageItemProps> = ({
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setShowMenu(false);
-        setShowReactionPicker(false);
       }
     };
-    if (showMenu || showReactionPicker) document.addEventListener('mousedown', handleClickOutside);
+    if (showMenu) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showMenu, showReactionPicker]);
-
-  const repliedMessage = message.reply_to_id ? allMessages.find(m => m.id === message.reply_to_id) : null;
+  }, [showMenu]);
 
   const renderStatus = () => {
     if (!isOwn) return null;
-    if (message.status === 'error') return <AlertCircle size={10} className="text-red-500 ml-1" />;
+    if (message.status === 'error') return (
+      <div className="flex items-center space-x-1 ml-1" title="Failed to Sync">
+        <AlertCircle size={12} className="text-red-500" />
+        <span className="text-[7px] text-red-500 font-black uppercase">Offline</span>
+      </div>
+    );
     if (message.status === 'sending') return <Loader2 size={11} className="animate-spin text-gray-400 dark:text-gray-500 ml-1" />;
     if (message.is_read) return <CheckCheck size={18} className="text-[#34B7F1] ml-1" strokeWidth={3} />;
     if (isReceiverOnline) return <CheckCheck size={18} className="text-gray-400 dark:text-gray-500 ml-1" strokeWidth={2.4} />;
@@ -109,79 +74,31 @@ const MessageItem: React.FC<MessageItemProps> = ({
     let colorClasses = isOwn 
       ? "bg-whatsapp-sender dark:bg-whatsapp-senderDark ring-black/5 dark:ring-white/5" 
       : "bg-whatsapp-receiver dark:bg-whatsapp-receiverDark ring-black/5 dark:ring-white/5";
+    
+    if (message.status === 'error') colorClasses += " border-red-500/30 shake-animation";
+    
     return `${baseClasses} ${shapeClasses} ${colorClasses}`;
   };
 
   return (
-    <div 
-      className={`flex group/msg ${isOwn ? 'justify-end' : 'justify-start'} relative transition-transform duration-200 select-none mb-1`}
-      style={{ transform: `translateX(${swipeOffset}px)` }}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-    >
-      <div 
-        className="absolute left-[-50px] top-1/2 -translate-y-1/2 opacity-0 transition-opacity"
-        style={{ opacity: swipeOffset / 100 }}
-      >
-        <div className="bg-emerald-500 dark:bg-emerald-600 text-white p-1.5 rounded-full shadow-lg">
-          <Reply size={20} />
-        </div>
-      </div>
-
+    <div className={`flex group/msg ${isOwn ? 'justify-end' : 'justify-start'} relative mb-1`}>
       <div className={getBubbleClasses()}>
         <div className="p-1 flex flex-col relative">
           
-          <div className="absolute top-1 right-1 flex space-x-1 opacity-0 group-hover/msg:opacity-100 transition-opacity z-10">
+          <div className="absolute top-1 right-1 opacity-0 group-hover/msg:opacity-100 transition-opacity z-10">
             <button 
-              onClick={() => { setShowReactionPicker(!showReactionPicker); setShowMenu(false); }}
-              className="p-1.5 rounded-full bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-black/10 dark:hover:bg-white/20"
-            >
-              <Smile size={14} />
-            </button>
-            <button 
-              onClick={() => { setShowMenu(!showMenu); setShowReactionPicker(false); }}
+              onClick={() => { setShowMenu(!showMenu); }}
               className="p-1.5 rounded-full bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-black/10 dark:hover:bg-white/20"
             >
               <MoreHorizontal size={14} />
             </button>
           </div>
 
-          {showReactionPicker && (
-            <div 
-              ref={menuRef}
-              className="absolute top-10 right-0 z-30 bg-white dark:bg-[#233138] shadow-2xl rounded-full border border-gray-100 dark:border-white/10 p-1 flex space-x-1 animate-in zoom-in-95 duration-100"
-            >
-              {REACTION_OPTIONS.map(emoji => (
-                <button 
-                  key={emoji}
-                  onClick={() => { onReaction(emoji); setShowReactionPicker(false); }}
-                  className="w-8 h-8 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-white/10 rounded-full text-lg transition-transform active:scale-150"
-                >
-                  {emoji}
-                </button>
-              ))}
-              <button 
-                onClick={() => { onReaction(null); setShowReactionPicker(false); }}
-                className="px-2 h-8 flex items-center justify-center hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 rounded-full text-[8px] font-black uppercase"
-              >
-                Clear
-              </button>
-            </div>
-          )}
-
           {showMenu && (
             <div 
               ref={menuRef}
               className={`absolute top-10 ${isOwn ? 'right-0' : 'left-0'} z-20 bg-white dark:bg-[#233138] shadow-2xl rounded-xl border border-gray-100 dark:border-white/10 py-1 min-w-[160px] animate-in zoom-in-95 duration-100`}
             >
-              <button 
-                onClick={() => { onReply(); setShowMenu(false); }}
-                className="w-full flex items-center space-x-3 px-4 py-2.5 text-[10px] font-black uppercase tracking-widest text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
-              >
-                <Reply size={14} />
-                <span>Reply</span>
-              </button>
               <button 
                 onClick={() => { onDeleteMessage(message.id, false); setShowMenu(false); }}
                 className="w-full flex items-center space-x-3 px-4 py-2.5 text-[10px] font-black uppercase tracking-widest text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
@@ -198,17 +115,6 @@ const MessageItem: React.FC<MessageItemProps> = ({
                   <span>Delete for Everyone</span>
                 </button>
               )}
-            </div>
-          )}
-
-          {repliedMessage && (
-            <div className="mx-2 mt-1 mb-2 p-2 bg-black/5 dark:bg-black/20 rounded-lg border-l-4 border-emerald-500 dark:border-emerald-400 opacity-80 max-w-full overflow-hidden">
-              <p className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-400 truncate">
-                {USERS[repliedMessage.sender_email]?.email.split('@')[0] || 'User'}
-              </p>
-              <p className="text-[11px] text-gray-700 dark:text-gray-300 line-clamp-2 italic">
-                {repliedMessage.message_text || (repliedMessage.image_url ? '📷 Image' : '🎤 Audio')}
-              </p>
             </div>
           )}
 
@@ -250,17 +156,6 @@ const MessageItem: React.FC<MessageItemProps> = ({
             {format(new Date(message.created_at), 'HH:mm')}
             {renderStatus()}
           </div>
-
-          {message.reactions && Object.keys(message.reactions).length > 0 && (
-            <div className={`absolute -bottom-2 ${isOwn ? 'left-2' : 'right-2'} flex -space-x-1 items-center bg-white dark:bg-[#233138] px-1.5 py-0.5 rounded-full shadow-md ring-1 ring-black/10 dark:ring-white/10 animate-in zoom-in-50 duration-200`}>
-              {Array.from(new Set(Object.values(message.reactions))).map((emoji, i) => (
-                <span key={i} className="text-[12px]">{emoji}</span>
-              ))}
-              {Object.keys(message.reactions).length > 1 && (
-                <span className="text-[8px] font-black ml-1 text-gray-600 dark:text-gray-400">{Object.keys(message.reactions).length}</span>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </div>
