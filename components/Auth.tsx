@@ -25,7 +25,6 @@ const Auth: React.FC = () => {
     setLoading(true);
     setError(null);
 
-    // Normalize email to lowercase and trim whitespace
     const emailLower = email.toLowerCase().trim();
     const allowed = ['shoe@gmail.com', 'socks@gmail.com'];
 
@@ -53,7 +52,7 @@ const Auth: React.FC = () => {
           password: password,
           options: {
             data: {
-              email_confirmed: true // Note: Depends on Supabase settings
+              email_confirmed: true
             }
           }
         });
@@ -83,12 +82,12 @@ const Auth: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-[100dvh] w-full items-center justify-center p-4 bg-emerald-600 overflow-hidden">
-      <div className="w-full max-w-md bg-white dark:bg-[#111B21] rounded-[2.5rem] shadow-2xl p-8 space-y-8 animate-in fade-in zoom-in duration-500">
+    <div className="flex flex-col h-[100dvh] w-full items-center justify-center p-4 bg-emerald-600 dark:bg-[#003d32] overflow-hidden transition-colors duration-500">
+      <div className="w-full max-w-md bg-white dark:bg-[#111B21] rounded-[2.5rem] shadow-2xl p-8 space-y-8 animate-in fade-in zoom-in duration-500 border border-black/5 dark:border-white/5">
         <div className="text-center space-y-4">
           <div className="relative inline-block">
-            <div className="w-20 h-20 bg-emerald-100 dark:bg-emerald-900/30 rounded-full text-4xl flex items-center justify-center shadow-inner transform transition-all hover:scale-105">
-              {email.toLowerCase().includes('shoe') ? '👟' : email.toLowerCase().includes('socks') ? '🧦' : <ShieldCheck className="text-emerald-600" size={40} />}
+            <div className="w-20 h-20 bg-emerald-50 dark:bg-emerald-950/40 rounded-full text-4xl flex items-center justify-center shadow-inner transform transition-all hover:scale-105 border border-emerald-100 dark:border-emerald-900/50">
+              {email.toLowerCase().includes('shoe') ? '👟' : email.toLowerCase().includes('socks') ? '🧦' : <ShieldCheck className="text-emerald-600 dark:text-emerald-400" size={40} />}
             </div>
           </div>
           
@@ -109,7 +108,7 @@ const Auth: React.FC = () => {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Enter Identification Email"
               required
-              className="w-full px-5 py-4 rounded-2xl border-2 border-gray-100 dark:border-gray-800 dark:bg-[#202C33] dark:text-white focus:border-emerald-500 transition-all outline-none text-base font-bold"
+              className="w-full px-5 py-4 rounded-2xl border-2 border-emerald-500/10 bg-[#1a2321] text-white placeholder-emerald-200/30 focus:border-emerald-500 transition-all outline-none text-base font-bold"
             />
           </div>
           
@@ -124,12 +123,12 @@ const Auth: React.FC = () => {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••"
                 required
-                className="w-full px-5 py-4 rounded-2xl border-2 border-gray-100 dark:border-gray-800 dark:bg-[#202C33] dark:text-white focus:border-emerald-500 transition-all outline-none text-base font-bold tracking-widest"
+                className="w-full px-5 py-4 rounded-2xl border-2 border-emerald-500/10 bg-[#1a2321] text-white placeholder-emerald-200/30 focus:border-emerald-500 transition-all outline-none text-base font-bold tracking-widest"
               />
               <button 
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-emerald-500 transition-colors"
+                className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-emerald-500/50 hover:text-emerald-400 transition-colors"
                 aria-label={showPassword ? "Hide password" : "Show password"}
               >
                 {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
@@ -139,9 +138,9 @@ const Auth: React.FC = () => {
 
           {error && (
             <div className={`p-4 rounded-2xl text-[11px] font-bold border-2 animate-in slide-in-from-top-2 duration-200 ${
-              error.type === 'success' ? 'bg-blue-50 border-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400' :
-              error.type === 'warning' ? 'bg-amber-50 border-amber-100 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400' :
-              'bg-red-50 border-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400'
+              error.type === 'success' ? 'bg-blue-50 border-blue-100 text-blue-700 dark:bg-blue-900/20 dark:border-blue-900/50 dark:text-blue-300' :
+              error.type === 'warning' ? 'bg-amber-50 border-amber-100 text-amber-700 dark:bg-amber-900/20 dark:border-amber-900/50 dark:text-amber-300' :
+              'bg-red-50 border-red-100 text-red-700 dark:bg-red-900/20 dark:border-red-900/50 dark:text-red-300'
             }`}>
               {error.msg}
             </div>
@@ -150,7 +149,7 @@ const Auth: React.FC = () => {
           <button
             type="submit"
             disabled={loading || cooldown > 0}
-            className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl shadow-xl shadow-emerald-500/20 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center space-x-3 uppercase tracking-widest text-base"
+            className="w-full py-4 bg-emerald-600 dark:bg-emerald-500 hover:bg-emerald-700 dark:hover:bg-emerald-600 text-white font-black rounded-2xl shadow-xl shadow-emerald-500/20 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center space-x-3 uppercase tracking-widest text-base"
           >
             {loading ? (
               <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
@@ -161,7 +160,7 @@ const Auth: React.FC = () => {
         </form>
 
         <div className="pt-2 text-center">
-          <p className="text-[9px] text-gray-400 font-bold uppercase tracking-[0.25em]">
+          <p className="text-[9px] text-gray-400 dark:text-gray-500 font-bold uppercase tracking-[0.25em]">
             End-to-End Encrypted Communication
           </p>
         </div>

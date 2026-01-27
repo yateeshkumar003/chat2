@@ -21,8 +21,20 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   
   const storageKey = `hidden_messages_${currentUserEmail}`;
   const wallpaperKey = `chat_wallpaper_${currentUserEmail}`;
+  const lastSeenKey = `last_seen_${receiverEmail}`;
+  const messagesCacheKey = `cache_msgs_${currentUserEmail}_${receiverEmail}`;
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  // Initialize messages from Cache
+  const [messages, setMessages] = useState<Message[]>(() => {
+    try {
+      const cached = localStorage.getItem(messagesCacheKey);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -39,9 +51,13 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [showWallpaperModal, setShowWallpaperModal] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
-  const [loadingHistory, setLoadingHistory] = useState(true);
+  
+  // Only show loader if we have NO cached messages
+  const [loadingHistory, setLoadingHistory] = useState(messages.length === 0);
+  
   const [isTyping, setIsTyping] = useState(false);
   const [isReceiverOnline, setIsReceiverOnline] = useState(false);
+  const [receiverLastSeen, setReceiverLastSeen] = useState<string | null>(() => localStorage.getItem(lastSeenKey));
   const [isClearing, setIsClearing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deletionError, setDeletionError] = useState<string | null>(null);
@@ -55,7 +71,17 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
-  // High-priority message updater
+  // Persistence for Cache
+  useEffect(() => {
+    localStorage.setItem(messagesCacheKey, JSON.stringify(messages));
+  }, [messages, messagesCacheKey]);
+
+  useEffect(() => {
+    if (receiverLastSeen) {
+      localStorage.setItem(lastSeenKey, receiverLastSeen);
+    }
+  }, [receiverLastSeen, lastSeenKey]);
+
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' = 'sent') => {
     if (!msg.id) return;
     
@@ -67,12 +93,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         const updated = [...prev];
         const existing = updated[existingIndex];
         
-        // Priority: If the new message is marked read, always respect that
         updated[existingIndex] = { 
           ...existing, 
           ...msg, 
           status: msg.status || existing.status || 'sent',
-          is_read: msg.is_read || existing.is_read
+          is_read: msg.is_read || existing.is_read,
+          reactions: msg.reactions || existing.reactions
         };
         return updated;
       }
@@ -81,13 +107,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     });
   }, []);
 
-  // Aggressive Read Receipt Broadcast
   const markMessagesAsRead = useCallback(async () => {
-    // Only mark read if the user is actually looking at the chat
     if (document.visibilityState !== 'visible') return;
 
     try {
-      // Send real-time broadcast immediately without waiting for DB
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -96,7 +119,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         });
       }
 
-      // Batch update database in the background
       await supabase
         .from('messages')
         .update({ is_read: true })
@@ -111,8 +133,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const markAsReadRef = useRef(markMessagesAsRead);
   useEffect(() => { markAsReadRef.current = markMessagesAsRead; }, [markMessagesAsRead]);
 
-  const fetchMessages = useCallback(async (showLoading = true) => {
-    if (showLoading) setLoadingHistory(true);
+  const fetchMessages = useCallback(async (isInitial = false) => {
+    // If we have messages cached, don't show the full screen loader
+    if (isInitial && messages.length === 0) setLoadingHistory(true);
+    
     try {
       const { data, error } = await supabase
         .from('messages')
@@ -130,20 +154,28 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           const r = (m.receiver_email || '').toLowerCase().trim();
           return (s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail);
         });
+        
         setMessages(filtered.map(m => ({ ...m, status: 'sent' })));
+        
+        const lastMsgFromReceiver = [...filtered].reverse().find(m => m.sender_email === receiverEmail);
+        if (lastMsgFromReceiver) {
+          setReceiverLastSeen(prev => prev || lastMsgFromReceiver.created_at);
+        }
+        
         markAsReadRef.current();
       }
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
-      if (showLoading) setLoadingHistory(false);
+      setLoadingHistory(false);
     }
-  }, [currentUserEmail, receiverEmail]);
+  }, [currentUserEmail, receiverEmail, messages.length]);
 
   useEffect(() => {
     let timer: any;
     if (syncStatus === 'connecting') {
-      timer = setTimeout(() => setShowConnectingBanner(true), 1500);
+      // Delay the connecting banner to avoid flickering
+      timer = setTimeout(() => setShowConnectingBanner(true), 3000);
     } else {
       setShowConnectingBanner(false);
       if (timer) clearTimeout(timer);
@@ -169,20 +201,30 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     channel
       .on('broadcast', { event: 'msg' }, (payload) => {
         if (payload.payload) {
-          upsertMessage(payload.payload as Message);
+          const msg = payload.payload as Message;
+          upsertMessage(msg);
           setIsTyping(false);
-          // When a message arrives via broadcast, mark it read immediately if visible
+          if (msg.sender_email === receiverEmail) {
+            setReceiverLastSeen(msg.created_at);
+          }
           markAsReadRef.current();
         }
       })
+      .on('broadcast', { event: 'reaction' }, (payload) => {
+        const { messageId, reactions } = payload.payload;
+        // Optimization: Find and update directly
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, reactions } : m));
+      })
       .on('broadcast', { event: 'read_receipt' }, (payload) => {
         if (payload.payload?.reader === receiverEmail) {
-          // Instant Optimistic Blue Ticks for ALL sent messages
           setMessages(prev => prev.map(m => 
             m.sender_email === currentUserEmail && !m.is_read 
               ? { ...m, is_read: true } 
               : m
           ));
+          if (payload.payload.timestamp) {
+            setReceiverLastSeen(payload.payload.timestamp);
+          }
         }
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
@@ -191,11 +233,11 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         const r = (msg.receiver_email || '').toLowerCase().trim();
         if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
           upsertMessage(msg);
+          if (s === receiverEmail) setReceiverLastSeen(msg.created_at);
           if (r === currentUserEmail) markAsReadRef.current();
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
-        // Sync any database status changes (like is_read becoming true)
         upsertMessage(payload.new as Message);
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
@@ -206,14 +248,16 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       })
       .on('presence', { event: 'sync' }, () => {
         const state = channel.presenceState();
-        const onlineUsers = Object.values(state).flat().map((u: any) => u.user);
-        setIsReceiverOnline(onlineUsers.includes(receiverEmail));
+        const onlineReceiver = Object.values(state).flat().find((u: any) => u.user === receiverEmail) as any;
+        setIsReceiverOnline(!!onlineReceiver);
+        if (onlineReceiver?.online_at) setReceiverLastSeen(onlineReceiver.online_at);
       })
       .on('broadcast', { event: 'typing' }, (payload) => {
         if (payload.payload?.user === receiverEmail) {
           setIsTyping(true);
           if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
           receiverTypingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
+          setReceiverLastSeen(new Date().toISOString());
         }
       })
       .on('broadcast', { event: 'stop_typing' }, () => setIsTyping(false))
@@ -231,7 +275,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       supabase.removeChannel(channel);
       channelRef.current = null;
     };
-  }, [currentUserEmail, receiverEmail, fetchMessages, upsertMessage]);
+  }, [currentUserEmail, receiverEmail, upsertMessage]);
 
   useEffect(() => {
     const onWake = () => {
@@ -243,7 +287,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         }
       }
     };
-
     window.addEventListener('visibilitychange', onWake);
     window.addEventListener('focus', onWake);
     return () => {
@@ -286,6 +329,40 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   };
 
+  // Fix: Implemented handleReaction function to handle emoji reactions
+  const handleReaction = useCallback(async (messageId: string, emoji: string | null) => {
+    setMessages(prev => {
+      const msg = prev.find(m => String(m.id) === String(messageId));
+      if (!msg) return prev;
+
+      const newReactions = { ...(msg.reactions || {}) };
+      if (emoji) {
+        newReactions[currentUserEmail] = emoji;
+      } else {
+        delete newReactions[currentUserEmail];
+      }
+
+      // Broadcast the update immediately for responsiveness
+      if (channelRef.current) {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'reaction',
+          payload: { messageId, reactions: newReactions }
+        });
+      }
+
+      // Update Supabase in the background
+      supabase.from('messages')
+        .update({ reactions: newReactions })
+        .eq('id', messageId)
+        .then(({ error }) => {
+          if (error) console.debug('Reaction sync error:', error);
+        });
+
+      return prev.map(m => String(m.id) === String(messageId) ? { ...m, reactions: newReactions } : m);
+    });
+  }, [currentUserEmail]);
+
   const getWallpaperClass = () => {
     if (wallpaper === 'default') return theme === 'dark' ? 'chat-wallpaper-dark' : 'chat-wallpaper-light';
     const wpMap: Record<string, string> = {
@@ -313,6 +390,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         theme={theme}
         isTyping={isTyping}
         isOnline={isReceiverOnline}
+        lastSeenAt={receiverLastSeen}
         syncStatus={syncStatus}
         onClearChat={() => { setDeletionError(null); setShowClearConfirm(true); }}
         onLogout={() => supabase.auth.signOut()}
@@ -377,6 +455,8 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
             currentUserEmail={currentUserEmail} 
             isReceiverOnline={isReceiverOnline}
             onImageClick={setSelectedImage}
+            onReply={setReplyingTo}
+            onReaction={handleReaction}
             onDeleteMessage={(id, forEveryone) => {
               if (forEveryone) {
                 setDeletionError(null);
@@ -392,11 +472,16 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       <MessageInput 
         senderEmail={currentUserEmail} 
         receiverEmail={receiverEmail} 
+        replyingTo={replyingTo}
+        onCancelReply={() => setReplyingTo(null)}
         disabled={!!dbError || isClearing || clearSuccess || showClearConfirm || !!deleteTarget}
         theme={theme}
         channel={channelRef.current}
         onTypingStatus={sendTypingStatus}
-        onMessageSent={(msg) => upsertMessage(msg, 'sending')}
+        onMessageSent={(msg) => {
+          upsertMessage(msg, 'sending');
+          setReplyingTo(null);
+        }}
         onMessageConfirmed={(tempId, confirmedMsg) => {
           upsertMessage(confirmedMsg);
         }}

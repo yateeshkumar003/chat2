@@ -1,4 +1,4 @@
-// Fix: Added missing React import to resolve the React namespace for CSSProperties
+
 import React from 'react';
 
 export interface Message {
@@ -11,6 +11,8 @@ export interface Message {
   created_at: string;
   is_read: boolean;
   status?: 'sending' | 'sent' | 'error';
+  reply_to_id?: string | null;
+  reactions?: Record<string, string>; // mapping user_email -> emoji
 }
 
 export type Theme = 'light' | 'dark';

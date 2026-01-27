@@ -2,12 +2,14 @@
 import React from 'react';
 import { Sun, Moon, Trash2, LogOut, Palette, RefreshCw, ShieldCheck } from 'lucide-react';
 import { UserProfile, Theme } from '../types';
+import { format, isToday, isYesterday } from 'date-fns';
 
 interface HeaderProps {
   receiver: UserProfile;
   theme: Theme;
   isTyping: boolean;
   isOnline: boolean;
+  lastSeenAt: string | null;
   syncStatus: 'connecting' | 'synced' | 'error';
   toggleTheme: () => void;
   onClearChat: () => void;
@@ -20,12 +22,26 @@ const Header: React.FC<HeaderProps> = ({
   theme, 
   isTyping, 
   isOnline, 
+  lastSeenAt,
   syncStatus,
   toggleTheme, 
   onClearChat, 
   onLogout, 
   onOpenWallpaper 
 }) => {
+  const formatLastSeen = (dateStr: string | null) => {
+    if (!dateStr) return 'Last seen recently';
+    try {
+      const date = new Date(dateStr);
+      const timeStr = format(date, 'HH:mm');
+      if (isToday(date)) return `Last seen at ${timeStr}`;
+      if (isYesterday(date)) return `Last seen yesterday at ${timeStr}`;
+      return `Last seen on ${format(date, 'MMM d')} at ${timeStr}`;
+    } catch {
+      return 'Last seen recently';
+    }
+  };
+
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-white dark:bg-[#202C33] shadow-sm border-b dark:border-gray-800/50 backdrop-blur-md bg-opacity-95">
       <div className="flex items-center space-x-3">
@@ -50,7 +66,7 @@ const Header: React.FC<HeaderProps> = ({
                 <p className="text-[9px] text-emerald-600 dark:text-emerald-500 font-black uppercase tracking-widest">Active Now</p>
               </div>
             ) : (
-              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest">Last seen recently</p>
+              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest">{formatLastSeen(lastSeenAt)}</p>
             )}
           </div>
         </div>

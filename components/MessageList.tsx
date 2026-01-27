@@ -10,9 +10,19 @@ interface MessageListProps {
   isReceiverOnline: boolean;
   onImageClick: (url: string) => void;
   onDeleteMessage: (id: string, forEveryone: boolean) => void;
+  onReply: (message: Message) => void;
+  onReaction: (messageId: string, emoji: string | null) => void;
 }
 
-const MessageList: React.FC<MessageListProps> = ({ messages, currentUserEmail, isReceiverOnline, onImageClick, onDeleteMessage }) => {
+const MessageList: React.FC<MessageListProps> = ({ 
+  messages, 
+  currentUserEmail, 
+  isReceiverOnline, 
+  onImageClick, 
+  onDeleteMessage,
+  onReply,
+  onReaction
+}) => {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -44,10 +54,13 @@ const MessageList: React.FC<MessageListProps> = ({ messages, currentUserEmail, i
             <MessageItem 
               key={msg.id} 
               message={msg} 
+              allMessages={messages}
               isOwn={msg.sender_email === currentUserEmail} 
               isReceiverOnline={isReceiverOnline}
               onImageClick={onImageClick}
               onDeleteMessage={onDeleteMessage}
+              onReply={() => onReply(msg)}
+              onReaction={(emoji) => onReaction(msg.id, emoji)}
             />
           ))}
         </div>

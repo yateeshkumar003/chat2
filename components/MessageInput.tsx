@@ -1,13 +1,15 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Smile, Paperclip, Mic, Loader2, StopCircle } from 'lucide-react';
+import { Send, Smile, Paperclip, Mic, Loader2, StopCircle, X, Reply } from 'lucide-react';
 import EmojiPicker, { Theme as EmojiTheme } from 'emoji-picker-react';
 import { supabase } from '../supabaseClient';
-import { Message, Theme } from '../types';
+import { Message, Theme, USERS } from '../types';
 
 interface MessageInputProps {
   senderEmail: string;
   receiverEmail: string;
+  replyingTo: Message | null;
+  onCancelReply: () => void;
   disabled?: boolean;
   theme: Theme;
   channel?: any;
@@ -19,6 +21,8 @@ interface MessageInputProps {
 const MessageInput: React.FC<MessageInputProps> = ({ 
   senderEmail, 
   receiverEmail, 
+  replyingTo,
+  onCancelReply,
   disabled, 
   theme, 
   channel,
@@ -81,6 +85,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
       message_text: finalMsg || null,
       image_url: content.imageUrl || null,
       audio_url: content.audioUrl || null,
+      reply_to_id: replyingTo ? replyingTo.id : null,
       created_at: now,
       is_read: false,
       status: 'sending'
@@ -99,9 +104,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
           payload: { ...messagePayload, status: 'sent' }
         });
         broadcastSuccessful = response === 'ok';
-      } catch (e) {
-        console.debug('Broadcast delay');
-      }
+      } catch (e) { console.debug('Broadcast error'); }
     }
 
     if (broadcastSuccessful) {
@@ -118,22 +121,17 @@ const MessageInput: React.FC<MessageInputProps> = ({
           message_text: finalMsg || null,
           image_url: content.imageUrl || null,
           audio_url: content.audioUrl || null,
+          reply_to_id: replyingTo ? replyingTo.id : null,
           is_read: false,
           created_at: now
         }])
         .select()
         .single();
 
-      if (error) {
-        throw error;
-      } else if (data) {
-        onMessageConfirmed(messageId, { ...data, status: 'sent' });
-      }
+      if (error) throw error;
+      if (data) onMessageConfirmed(messageId, { ...data, status: 'sent' });
     } catch (err) {
-      console.error('Persistence failed:', err);
-      if (!broadcastSuccessful) {
-        onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
-      }
+      if (!broadcastSuccessful) onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
     }
   };
 
@@ -142,31 +140,14 @@ const MessageInput: React.FC<MessageInputProps> = ({
     if (!file || disabled) return;
     setIsUploading(true);
     try {
-      // Clean filename generation
       const ext = file.name.split('.').pop() || 'jpg';
       const cleanName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${ext}`;
-      
-      const { error: uploadError } = await supabase.storage
-        .from('media')
-        .upload(cleanName, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
-
+      const { error: uploadError } = await supabase.storage.from('media').upload(cleanName, file);
       if (uploadError) throw uploadError;
-
       const { data } = supabase.storage.from('media').getPublicUrl(cleanName);
-      
-      if (!data?.publicUrl) throw new Error("Could not generate public URL");
-
       await handleSend({ imageUrl: data.publicUrl });
-    } catch (err: any) { 
-      console.error('Upload failed:', err);
-      alert(`Upload failed: ${err.message || 'Check if "media" bucket is Public'}`);
-    } finally { 
-      setIsUploading(false); 
-      if (fileInputRef.current) fileInputRef.current.value = ''; 
-    }
+    } catch (err) { console.error('Upload failed'); }
+    finally { setIsUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
   const startRecording = async () => {
@@ -188,21 +169,33 @@ const MessageInput: React.FC<MessageInputProps> = ({
       };
       recorder.start();
       setIsRecording(true);
-    } catch (err) { 
-      console.error('Microphone error:', err);
-    }
+    } catch (err) { console.error('Microphone error'); }
   };
 
   return (
-    <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t dark:border-gray-800 ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t border-gray-200 dark:border-gray-800 relative transition-colors duration-500 ${disabled ? 'opacity-50' : ''}`}>
+      
+      {replyingTo && (
+        <div className="absolute top-0 left-0 w-full -translate-y-full px-4 py-2 bg-[#F0F2F5] dark:bg-[#202C33] border-t border-gray-200 dark:border-gray-800 animate-in slide-in-from-bottom-full duration-200 z-10 transition-colors">
+          <div className="flex items-center bg-black/5 dark:bg-black/20 rounded-lg p-2 border-l-4 border-emerald-500 dark:border-emerald-400 overflow-hidden shadow-sm">
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-400 truncate">
+                Replying to {USERS[replyingTo.sender_email]?.email.split('@')[0] || 'User'}
+              </p>
+              <p className="text-[11px] text-gray-700 dark:text-gray-300 truncate italic">
+                {replyingTo.message_text || (replyingTo.image_url ? '📷 Image' : '🎤 Audio')}
+              </p>
+            </div>
+            <button onClick={onCancelReply} className="p-1 ml-2 text-gray-400 hover:text-red-500 transition-colors">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {showEmojiPicker && (
         <div className="absolute bottom-20 left-0 w-full md:max-w-sm z-50 shadow-2xl rounded-t-2xl overflow-hidden animate-in slide-in-from-bottom-5 duration-200">
-          <EmojiPicker 
-            onEmojiClick={(e) => setText(t => t + e.emoji)} 
-            theme={theme === 'dark' ? EmojiTheme.DARK : EmojiTheme.LIGHT} 
-            width="100%" 
-            height={350} 
-          />
+          <EmojiPicker onEmojiClick={(e) => setText(t => t + e.emoji)} theme={theme === 'dark' ? EmojiTheme.DARK : EmojiTheme.LIGHT} width="100%" height={350} />
           <div className="fixed inset-0 z-[-1]" onClick={() => setShowEmojiPicker(false)} />
         </div>
       )}
@@ -211,9 +204,9 @@ const MessageInput: React.FC<MessageInputProps> = ({
         {!isRecording ? (
           <>
             <div className="flex items-center shrink-0">
-              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors" title="Emojis"><Smile size={24} /></button>
-              <button onClick={startRecording} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors" title="Voice Message"><Mic size={24} /></button>
-              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 dark:text-[#8696a0] hover:text-emerald-500 transition-colors" title="Upload Image"><Paperclip size={24} className="-rotate-45" /></button>
+              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2 text-gray-600 dark:text-[#8696a0] hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors"><Smile size={24} /></button>
+              <button onClick={startRecording} className="p-2 text-gray-600 dark:text-[#8696a0] hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors"><Mic size={24} /></button>
+              <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-600 dark:text-[#8696a0] hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors"><Paperclip size={24} className="-rotate-45" /></button>
             </div>
             <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
             <input
@@ -222,12 +215,12 @@ const MessageInput: React.FC<MessageInputProps> = ({
               onChange={handleInputChange}
               onKeyDown={(e) => e.key === 'Enter' && handleSend({ text })}
               placeholder="Type a message"
-              className="flex-1 min-w-0 py-2.5 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-medium text-black dark:text-white placeholder:text-gray-400"
+              className="flex-1 min-w-0 py-2.5 px-4 bg-white dark:bg-[#2A3942] rounded-2xl outline-none text-base font-medium text-gray-900 dark:text-white border border-transparent focus:border-emerald-500/20 dark:focus:border-emerald-500/10 placeholder-gray-400 dark:placeholder-gray-600 transition-all shadow-inner"
             />
             {(text.trim() || isUploading) && (
               <button 
                 onClick={() => handleSend({ text })} 
-                className="p-3 bg-emerald-500 text-white rounded-full shadow-lg hover:bg-emerald-600 transition-all active:scale-90 flex items-center justify-center shrink-0" 
+                className="p-3 bg-emerald-500 dark:bg-emerald-600 text-white rounded-full shadow-lg active:scale-90 flex items-center justify-center shrink-0 transition-all hover:bg-emerald-600 dark:hover:bg-emerald-500" 
                 disabled={isUploading}
               >
                 {isUploading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
@@ -235,14 +228,14 @@ const MessageInput: React.FC<MessageInputProps> = ({
             )}
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-2 border-2 border-emerald-500/20">
+          <div className="flex-1 flex items-center justify-between bg-white dark:bg-[#2A3942] rounded-2xl px-4 py-2 border-2 border-emerald-500/20 shadow-inner animate-in zoom-in-95 duration-200">
             <div className="flex items-center space-x-3">
-              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-              <span className="text-sm font-black text-emerald-600 uppercase tracking-widest">{recordingTime}s Recording</span>
+              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.5)]" />
+              <span className="text-sm font-black text-emerald-700 dark:text-emerald-400 uppercase tracking-widest">{recordingTime}s Recording</span>
             </div>
             <div className="flex items-center space-x-4">
-              <button onClick={() => setIsRecording(false)} className="text-red-500 font-black text-[10px] uppercase tracking-tighter hover:underline">Cancel</button>
-              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-2 bg-emerald-500 text-white rounded-full shadow-lg active:scale-90"><StopCircle size={20} /></button>
+              <button onClick={() => setIsRecording(false)} className="text-red-500 hover:text-red-600 font-black text-[10px] uppercase tracking-tighter transition-colors">Cancel</button>
+              <button onClick={() => mediaRecorderRef.current?.stop()} className="p-2 bg-emerald-500 dark:bg-emerald-600 text-white rounded-full shadow-lg active:scale-90 hover:bg-emerald-600 dark:hover:bg-emerald-500 transition-all"><StopCircle size={20} /></button>
             </div>
           </div>
         )}
