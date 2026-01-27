@@ -55,7 +55,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
 
-  // Stable message updater
+  // High-priority message updater
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' = 'sent') => {
     if (!msg.id) return;
     
@@ -65,10 +65,14 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       
       if (existingIndex !== -1) {
         const updated = [...prev];
+        const existing = updated[existingIndex];
+        
+        // Priority: If the new message is marked read, always respect that
         updated[existingIndex] = { 
-          ...updated[existingIndex], 
+          ...existing, 
           ...msg, 
-          status: msg.status || updated[existingIndex].status || 'sent' 
+          status: msg.status || existing.status || 'sent',
+          is_read: msg.is_read || existing.is_read
         };
         return updated;
       }
@@ -77,21 +81,22 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     });
   }, []);
 
-  // Stable Mark Read logic (Decoupled from state to prevent loops)
+  // Aggressive Read Receipt Broadcast
   const markMessagesAsRead = useCallback(async () => {
+    // Only mark read if the user is actually looking at the chat
     if (document.visibilityState !== 'visible') return;
 
     try {
-      // Send real-time broadcast ONLY if channel is ready
-      if (channelRef.current && channelRef.current.state === 'joined') {
+      // Send real-time broadcast immediately without waiting for DB
+      if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
           event: 'read_receipt',
-          payload: { reader: currentUserEmail }
+          payload: { reader: currentUserEmail, timestamp: new Date().toISOString() }
         });
       }
 
-      // Batch update database
+      // Batch update database in the background
       await supabase
         .from('messages')
         .update({ is_read: true })
@@ -99,11 +104,10 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .eq('sender_email', receiverEmail)
         .eq('is_read', false);
     } catch (e) {
-      console.debug('Read sync failed/delayed');
+      console.debug('Read sync failed:', e);
     }
   }, [currentUserEmail, receiverEmail]);
 
-  // Ref to hold current mark read logic for the effect to use without re-triggering
   const markAsReadRef = useRef(markMessagesAsRead);
   useEffect(() => { markAsReadRef.current = markMessagesAsRead; }, [markMessagesAsRead]);
 
@@ -136,7 +140,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     }
   }, [currentUserEmail, receiverEmail]);
 
-  // Banner logic
   useEffect(() => {
     let timer: any;
     if (syncStatus === 'connecting') {
@@ -148,7 +151,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     return () => clearTimeout(timer);
   }, [syncStatus]);
 
-  // Connection Setup (Stable Dependencies)
   useEffect(() => {
     fetchMessages(true);
 
@@ -169,13 +171,17 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         if (payload.payload) {
           upsertMessage(payload.payload as Message);
           setIsTyping(false);
+          // When a message arrives via broadcast, mark it read immediately if visible
           markAsReadRef.current();
         }
       })
       .on('broadcast', { event: 'read_receipt' }, (payload) => {
         if (payload.payload?.reader === receiverEmail) {
+          // Instant Optimistic Blue Ticks for ALL sent messages
           setMessages(prev => prev.map(m => 
-            m.sender_email === currentUserEmail ? { ...m, is_read: true } : m
+            m.sender_email === currentUserEmail && !m.is_read 
+              ? { ...m, is_read: true } 
+              : m
           ));
         }
       })
@@ -189,6 +195,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
+        // Sync any database status changes (like is_read becoming true)
         upsertMessage(payload.new as Message);
       })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, (payload) => {
@@ -215,7 +222,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           setSyncStatus('synced');
           await channel.track({ user: currentUserEmail, online_at: new Date().toISOString() });
           markAsReadRef.current();
-        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+        } else {
           setSyncStatus('connecting');
         }
       });
@@ -226,13 +233,12 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     };
   }, [currentUserEmail, receiverEmail, fetchMessages, upsertMessage]);
 
-  // Separate Effect for Visibility/Wake listeners to prevent re-subscriptions
   useEffect(() => {
     const onWake = () => {
       if (document.visibilityState === 'visible') {
         fetchMessages(false); 
         markAsReadRef.current();
-        if (channelRef.current && channelRef.current.state === 'joined') {
+        if (channelRef.current) {
           channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
         }
       }

@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, memo } from 'react';
 import { format } from 'date-fns';
 import { Message } from '../types';
-import { Play, Pause, Check, CheckCheck, Loader2, Image as ImageIcon, AlertCircle, MoreHorizontal, Trash2, UserMinus } from 'lucide-react';
+import { Play, Pause, Check, CheckCheck, Loader2, Image as ImageIcon, AlertCircle, MoreHorizontal, Trash2, UserMinus, ImageOff } from 'lucide-react';
 
 interface MessageItemProps {
   message: Message;
@@ -16,6 +16,7 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
   const [isPlaying, setIsPlaying] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -48,17 +49,15 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
   const renderStatus = () => {
     if (!isOwn) return null;
     
-    // 1. Error State: Maximum Prominence
     if (message.status === 'error') {
       return (
-        <div className="flex items-center space-x-1.5 ml-2 px-2 py-0.5 bg-red-100 dark:bg-red-900/40 rounded-full border border-red-200 dark:border-red-800 transition-all">
+        <div className="flex items-center space-x-1.5 ml-2 px-2 py-0.5 bg-red-100 dark:bg-red-900/40 rounded-full border border-red-200 dark:border-red-800 transition-all duration-75">
           <AlertCircle size={10} className="text-red-600 dark:text-red-400" strokeWidth={3} />
           <span className="text-[7px] font-black uppercase text-red-600 dark:text-red-400 tracking-tighter">Failed</span>
         </div>
       );
     }
 
-    // 2. Sending State
     if (message.status === 'sending') {
       return (
         <div className="flex items-center space-x-1 ml-1.5 opacity-60">
@@ -68,28 +67,27 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
       );
     }
     
-    // 3. Read Status: Double Blue Ticks
+    // BLUE TICKS: Read status always takes absolute precedence
     if (message.is_read === true) {
       return (
-        <div className="flex items-center ml-1 transition-all duration-300">
+        <div className="flex items-center ml-1 transition-colors duration-75 animate-in zoom-in-75 duration-100">
           <CheckCheck size={18} className="text-[#34B7F1]" strokeWidth={3} />
         </div>
       );
     }
     
-    // 4. Delivered Status: Double Gray Ticks (Shown if receiver is online)
-    // This provides instant feedback that the recipient has the app open/active
+    // GRAY DOUBLE TICKS: Delivered status
     if (isReceiverOnline) {
       return (
-        <div className="flex items-center ml-1 transition-all duration-300">
+        <div className="flex items-center ml-1 transition-colors duration-75">
           <CheckCheck size={18} className="text-gray-400 dark:text-gray-500" strokeWidth={2.4} />
         </div>
       );
     }
 
-    // 5. Sent Status: Single Gray Tick (Receiver is offline)
+    // GRAY SINGLE TICK: Sent status
     return (
-      <div className="flex items-center ml-1 transition-all duration-300">
+      <div className="flex items-center ml-1 transition-colors duration-75">
         <Check size={18} className="text-gray-400 dark:text-gray-500" strokeWidth={2.4} />
       </div>
     );
@@ -149,9 +147,31 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
           )}
 
           {message.image_url && (
-            <div className="relative mb-0.5 rounded-xl overflow-hidden cursor-pointer bg-black/5 min-h-[120px]" onClick={() => onImageClick(message.image_url!)}>
-              {!imageLoaded && <div className="absolute inset-0 flex items-center justify-center text-gray-400 animate-pulse"><ImageIcon size={32} /></div>}
-              <img src={message.image_url} alt="Shared" className={`max-h-80 w-full object-cover transition-opacity duration-500 ${imageLoaded ? 'opacity-100' : 'opacity-0'}`} onLoad={() => setImageLoaded(true)} loading="lazy" />
+            <div className="relative mb-0.5 rounded-xl overflow-hidden cursor-pointer bg-black/5 min-h-[120px] max-h-80" onClick={() => onImageClick(message.image_url!)}>
+              {(!imageLoaded && !imageError) && (
+                <div className="absolute inset-0 flex items-center justify-center text-gray-400 animate-pulse bg-gray-100 dark:bg-black/20">
+                  <ImageIcon size={32} />
+                </div>
+              )}
+              {imageError ? (
+                <div className="flex flex-col items-center justify-center p-8 bg-gray-100 dark:bg-black/40 text-gray-400 space-y-2">
+                  <ImageOff size={32} />
+                  <span className="text-[10px] font-black uppercase tracking-tighter">Media Unavailable</span>
+                  <span className="text-[8px] opacity-50 text-center px-4 leading-tight">URL Restricted or Network Failure</span>
+                </div>
+              ) : (
+                <img 
+                  src={message.image_url} 
+                  alt="Shared" 
+                  className={`max-h-80 w-full object-cover transition-opacity duration-300 ${imageLoaded ? 'opacity-100' : 'opacity-0'}`} 
+                  onLoad={() => setImageLoaded(true)} 
+                  onError={() => {
+                    console.warn('Image failed to load:', message.image_url);
+                    setImageError(true);
+                  }}
+                  loading="lazy" 
+                />
+              )}
             </div>
           )}
 
@@ -188,5 +208,4 @@ const MessageItem: React.FC<MessageItemProps> = ({ message, isOwn, isReceiverOnl
   );
 };
 
-// Exporting memoized component for better performance (no lag)
 export default memo(MessageItem);

@@ -71,7 +71,6 @@ const MessageInput: React.FC<MessageInputProps> = ({
     onTypingStatus('stop_typing');
     lastTypingTimeRef.current = 0;
 
-    // Fast local ID generation
     const messageId = Date.now().toString() + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
     const now = new Date().toISOString();
     
@@ -87,12 +86,10 @@ const MessageInput: React.FC<MessageInputProps> = ({
       status: 'sending'
     };
 
-    // 1. Instant local display (Spinner appears for a split second)
     onMessageSent(messagePayload);
     setText('');
     setShowEmojiPicker(false);
 
-    // 2. Instant WebSocket Broadcast - SUCCESS here means "Sent to Node"
     let broadcastSuccessful = false;
     if (channel) {
       try {
@@ -107,12 +104,10 @@ const MessageInput: React.FC<MessageInputProps> = ({
       }
     }
 
-    // 3. OPTIMISTIC TRANSITION: If broadcast worked, show "Sent" (single tick) immediately
     if (broadcastSuccessful) {
       onMessageConfirmed(messageId, { ...messagePayload, status: 'sent' });
     }
 
-    // 4. Persistent Storage (Database) in the background
     try {
       const { data, error } = await supabase
         .from('messages')
@@ -132,12 +127,10 @@ const MessageInput: React.FC<MessageInputProps> = ({
       if (error) {
         throw error;
       } else if (data) {
-        // Final confirmation from DB
         onMessageConfirmed(messageId, { ...data, status: 'sent' });
       }
     } catch (err) {
       console.error('Persistence failed:', err);
-      // Only show error if broadcast also failed or DB is hard-failing
       if (!broadcastSuccessful) {
         onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
       }
@@ -149,13 +142,27 @@ const MessageInput: React.FC<MessageInputProps> = ({
     if (!file || disabled) return;
     setIsUploading(true);
     try {
-      const fileName = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${file.name.split('.').pop()}`;
-      const { error } = await supabase.storage.from('media').upload(fileName, file);
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(fileName);
-      await handleSend({ imageUrl: publicUrl });
-    } catch (err) { 
-      console.error('Upload failed:', err); 
+      // Clean filename generation
+      const ext = file.name.split('.').pop() || 'jpg';
+      const cleanName = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${ext}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('media')
+        .upload(cleanName, file, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from('media').getPublicUrl(cleanName);
+      
+      if (!data?.publicUrl) throw new Error("Could not generate public URL");
+
+      await handleSend({ imageUrl: data.publicUrl });
+    } catch (err: any) { 
+      console.error('Upload failed:', err);
+      alert(`Upload failed: ${err.message || 'Check if "media" bucket is Public'}`);
     } finally { 
       setIsUploading(false); 
       if (fileInputRef.current) fileInputRef.current.value = ''; 
