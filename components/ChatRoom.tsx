@@ -1,13 +1,13 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../supabaseClient';
-import { Message, Theme, USERS } from '../types';
+import { Message, Theme, USERS, WALLPAPERS } from '../types';
 import Header from './Header';
 import MessageList from './MessageList';
 import MessageInput from './MessageInput';
 import ImageModal from './ImageModal';
 import WallpaperModal from './WallpaperModal';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 
 interface ChatRoomProps {
   session: any;
@@ -48,14 +48,13 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [showWallpaperModal, setShowWallpaperModal] = useState(false);
-  const [dbError] = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(messages.length === 0);
   const [isTyping, setIsTyping] = useState(false);
   const [isReceiverOnline, setIsReceiverOnline] = useState(false);
   const [receiverLastSeen, setReceiverLastSeen] = useState<string | null>(() => localStorage.getItem(lastSeenKey));
   const [syncStatus, setSyncStatus] = useState<'connecting' | 'synced' | 'error'>('connecting');
-  const [showClearConfirm] = useState(false);
-  const [deleteTarget] = useState<string | null>(null);
   
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
@@ -63,6 +62,36 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   useEffect(() => {
     localStorage.setItem(messagesCacheKey, JSON.stringify(messages));
   }, [messages, messagesCacheKey]);
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify(hiddenMessageIds));
+  }, [hiddenMessageIds, storageKey]);
+
+  const performClearChat = useCallback(async () => {
+    setIsClearing(true);
+    try {
+      const { error } = await supabase
+        .from('messages')
+        .delete()
+        .or(`and(sender_email.eq.${currentUserEmail},receiver_email.eq.${receiverEmail}),and(sender_email.eq.${receiverEmail},receiver_email.eq.${currentUserEmail})`);
+
+      if (error) {
+        console.warn("DB delete restricted. Falling back to local view clear.", error);
+        const allIds = messages.map(m => String(m.id));
+        setHiddenMessageIds(prev => Array.from(new Set([...prev, ...allIds])));
+      } else {
+        setMessages([]);
+        setHiddenMessageIds([]);
+        localStorage.removeItem(messagesCacheKey);
+        localStorage.removeItem(storageKey);
+      }
+    } catch (err) {
+      console.error("Clear Chat Failed:", err);
+    } finally {
+      setIsClearing(false);
+      setShowClearConfirm(false);
+    }
+  }, [currentUserEmail, receiverEmail, messages, messagesCacheKey, storageKey]);
 
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' | 'error' = 'sent') => {
     if (!msg.id) return;
@@ -74,7 +103,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       if (existingIndex !== -1) {
         const updated = [...prev];
         const existing = updated[existingIndex];
-        
         updated[existingIndex] = { 
           ...existing, 
           ...msg, 
@@ -98,7 +126,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .order('created_at', { ascending: true });
 
       if (error) {
-        console.error('Fetch error:', error);
         setSyncStatus('error');
       } else if (data) {
         const filtered = data.filter(m => {
@@ -114,15 +141,15 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           await supabase.from('messages').update({ is_read: true }).eq('receiver_email', currentUserEmail).eq('sender_email', receiverEmail).eq('is_read', false);
         }
 
-        // Update last seen based on the most recent message received from the other person
         const messagesFromReceiver = filtered.filter(m => m.sender_email === receiverEmail);
         if (messagesFromReceiver.length > 0) {
           const latestMsg = messagesFromReceiver[messagesFromReceiver.length - 1];
-          setReceiverLastSeen(latestMsg.created_at);
-          localStorage.setItem(lastSeenKey, latestMsg.created_at);
+          const timestamp = latestMsg.created_at;
+          setReceiverLastSeen(timestamp);
+          localStorage.setItem(lastSeenKey, timestamp);
         }
       }
-    } catch (e) { console.error('Fetch sync failed:', e); }
+    } catch (e) { console.error('Sync failed:', e); }
     finally { setLoadingHistory(false); }
   }, [currentUserEmail, receiverEmail, messages.length, lastSeenKey]);
 
@@ -141,8 +168,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         if (payload.payload) {
           upsertMessage(payload.payload as Message);
           setIsTyping(false);
-          
-          // If the message is from the receiver, update their last seen status
           if (payload.payload.sender_email === receiverEmail) {
             const now = new Date().toISOString();
             setReceiverLastSeen(now);
@@ -155,7 +180,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           setMessages(prev => prev.map(m => 
             m.sender_email === currentUserEmail && !m.is_read ? { ...m, is_read: true } : m
           ));
-          // If they read a message, they are active
           const now = new Date().toISOString();
           setReceiverLastSeen(now);
           localStorage.setItem(lastSeenKey, now);
@@ -176,11 +200,9 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         
         if (receiverPresence) {
           setIsReceiverOnline(true);
-          // Update the "Last Seen" to their current online session start/heartbeat if available
-          if (receiverPresence.online_at) {
-            setReceiverLastSeen(receiverPresence.online_at);
-            localStorage.setItem(lastSeenKey, receiverPresence.online_at);
-          }
+          const activeTime = receiverPresence.online_at || new Date().toISOString();
+          setReceiverLastSeen(activeTime);
+          localStorage.setItem(lastSeenKey, activeTime);
         } else {
           setIsReceiverOnline(false);
         }
@@ -188,7 +210,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       .on('broadcast', { event: 'typing' }, (payload) => {
         if (payload.payload?.user === receiverEmail) {
           setIsTyping(true);
-          // Typing also indicates they are active now
           const now = new Date().toISOString();
           setReceiverLastSeen(now);
           localStorage.setItem(lastSeenKey, now);
@@ -208,84 +229,115 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       });
 
     return () => { 
-      supabase.removeChannel(channel); 
-      channelRef.current = null;
+      supabase.removeChannel(channel);
+      if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
     };
   }, [currentUserEmail, receiverEmail, upsertMessage, fetchMessages, lastSeenKey]);
 
-  useEffect(() => {
-    const handleSyncOnResume = () => {
-      if (document.visibilityState === 'visible') {
-        fetchMessages(false);
-        if (channelRef.current && channelRef.current.state === 'joined') {
-          channelRef.current.track({ user: currentUserEmail, online_at: new Date().toISOString() });
-        }
-      }
-    };
-    window.addEventListener('visibilitychange', handleSyncOnResume);
-    window.addEventListener('focus', handleSyncOnResume);
-    return () => {
-      window.removeEventListener('visibilitychange', handleSyncOnResume);
-      window.removeEventListener('focus', handleSyncOnResume);
-    };
-  }, [currentUserEmail, fetchMessages]);
+  const handleDeleteMessage = useCallback(async (id: string, forEveryone: boolean) => {
+    if (forEveryone) {
+      await supabase.from('messages').delete().eq('id', id).eq('sender_email', currentUserEmail);
+    }
+    setHiddenMessageIds(prev => [...prev, String(id)]);
+  }, [currentUserEmail]);
 
-  const visibleMessages = messages.filter(m => !hiddenMessageIds.includes(String(m.id)));
+  const handleTypingStatus = useCallback((status: 'typing' | 'stop_typing') => {
+    if (channelRef.current && status === 'typing') {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { user: currentUserEmail }
+      });
+    }
+  }, [currentUserEmail]);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  const currentWallpaper = WALLPAPERS.find(w => w.id === wallpaper);
 
   return (
-    <div className={`flex flex-col h-[100dvh] w-full overflow-hidden transition-all duration-700 relative ${theme === 'dark' ? 'chat-wallpaper-dark' : 'chat-wallpaper-light'}`}>
+    <div className={`flex-1 flex flex-col h-full relative overflow-hidden transition-colors duration-500`}>
       <Header 
-        receiver={USERS[receiverEmail] || { email: receiverEmail, emoji: '👤' }} 
-        toggleTheme={toggleTheme} 
-        theme={theme}
-        isTyping={isTyping}
-        isOnline={isReceiverOnline}
+        receiver={USERS[receiverEmail]} 
+        theme={theme} 
+        isTyping={isTyping} 
+        isOnline={isReceiverOnline} 
         lastSeenAt={receiverLastSeen}
         syncStatus={syncStatus}
-        onClearChat={() => {}} // Implementation for clearing chat would go here
-        onLogout={() => supabase.auth.signOut()}
-        onOpenWallpaper={() => setShowWallpaperModal(true)}
+        toggleTheme={toggleTheme} 
+        onClearChat={() => setShowClearConfirm(true)} 
+        onLogout={handleLogout} 
+        onOpenWallpaper={() => setShowWallpaperModal(true)} 
       />
-      <div className="flex-1 overflow-hidden relative flex flex-col">
+
+      <div className={`flex-1 flex flex-col relative overflow-hidden ${wallpaper === 'default' ? 'chat-wallpaper-light dark:chat-wallpaper-dark' : (currentWallpaper?.className || '')}`} style={currentWallpaper?.style}>
         {loadingHistory ? (
-          <div className="flex-1 flex flex-col items-center justify-center space-y-4">
-            <Loader2 className="animate-spin text-emerald-500" size={48} />
-            <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-[0.4em]">Restoring History</p>
+          <div className="flex-1 flex items-center justify-center">
+            <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
           </div>
         ) : (
           <MessageList 
-            messages={visibleMessages} 
-            currentUserEmail={currentUserEmail} 
+            messages={messages.filter(m => !hiddenMessageIds.includes(String(m.id)))}
+            currentUserEmail={currentUserEmail}
             isReceiverOnline={isReceiverOnline}
             onImageClick={setSelectedImage}
-            onDeleteMessage={(id) => {
-              setHiddenMessageIds(prev => [...prev, String(id)]);
-            }}
+            onDeleteMessage={handleDeleteMessage}
           />
         )}
       </div>
+
       <MessageInput 
         senderEmail={currentUserEmail} 
-        receiverEmail={receiverEmail} 
-        disabled={!!dbError || showClearConfirm || !!deleteTarget}
+        receiverEmail={receiverEmail}
         theme={theme}
         channel={channelRef.current}
         syncStatus={syncStatus}
-        onTypingStatus={(status) => {
-          if (channelRef.current && channelRef.current.state === 'joined') {
-            channelRef.current.send({ type: 'broadcast', event: status, payload: { user: currentUserEmail } });
-          }
-        }}
-        onMessageSent={(msg) => { upsertMessage(msg, 'sending'); }}
+        onTypingStatus={handleTypingStatus}
+        onMessageSent={(msg) => upsertMessage(msg, 'sending')}
         onMessageConfirmed={(tempId, confirmedMsg) => upsertMessage(confirmedMsg)}
       />
+
       {selectedImage && <ImageModal imageUrl={selectedImage} onClose={() => setSelectedImage(null)} />}
+      
       {showWallpaperModal && (
         <WallpaperModal 
           currentWallpaper={wallpaper} 
-          onSelect={(id) => { setWallpaper(id); setShowWallpaperModal(false); }} 
+          onSelect={(id) => { setWallpaper(id); localStorage.setItem(wallpaperKey, id); setShowWallpaperModal(false); }} 
           onClose={() => setShowWallpaperModal(false)} 
         />
+      )}
+
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-[#111B21] rounded-[2rem] p-8 max-w-sm w-full shadow-2xl border border-white/5 space-y-6">
+            <div className="flex flex-col items-center text-center space-y-4">
+              <div className="w-16 h-16 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center text-red-500">
+                <Trash2 size={32} />
+              </div>
+              <div>
+                <h3 className="text-xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Wipe History?</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 font-medium">This action is irreversible and will purge all messages from this channel.</p>
+              </div>
+            </div>
+            <div className="flex space-x-3">
+              <button 
+                onClick={() => setShowClearConfirm(false)}
+                className="flex-1 py-4 px-6 bg-gray-100 dark:bg-white/5 text-gray-900 dark:text-white font-black rounded-2xl uppercase tracking-widest text-xs hover:bg-gray-200 dark:hover:bg-white/10 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={performClearChat}
+                disabled={isClearing}
+                className="flex-1 py-4 px-6 bg-red-600 text-white font-black rounded-2xl uppercase tracking-widest text-xs shadow-lg shadow-red-600/20 hover:bg-red-700 active:scale-95 transition-all flex items-center justify-center"
+              >
+                {isClearing ? <Loader2 className="animate-spin" size={16} /> : "Purge Chat"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
