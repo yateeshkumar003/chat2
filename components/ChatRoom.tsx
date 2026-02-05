@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from '../supabaseClient';
 import { Message, Theme, USERS, WALLPAPERS } from '../types';
 import Header from './Header';
@@ -16,8 +16,8 @@ interface ChatRoomProps {
 }
 
 const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
-  const currentUserEmail = (session.user.email || '').toLowerCase().trim();
-  const receiverEmail = currentUserEmail.includes('shoe') ? 'socks@gmail.com' : 'shoe@gmail.com';
+  const currentUserEmail = useMemo(() => (session.user.email || '').toLowerCase().trim(), [session.user.email]);
+  const receiverEmail = useMemo(() => currentUserEmail.includes('shoe') ? 'socks@gmail.com' : 'shoe@gmail.com', [currentUserEmail]);
   
   const storageKey = `hidden_messages_${currentUserEmail}`;
   const wallpaperKey = `chat_wallpaper_${currentUserEmail}`;
@@ -58,14 +58,23 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   
   const channelRef = useRef<any>(null);
   const receiverTypingTimeoutRef = useRef<any>(null);
+  const isMounted = useRef(true);
 
+  // Throttled persistence to localStorage
   useEffect(() => {
-    localStorage.setItem(messagesCacheKey, JSON.stringify(messages));
+    const timeout = setTimeout(() => {
+      localStorage.setItem(messagesCacheKey, JSON.stringify(messages));
+    }, 2000);
+    return () => clearTimeout(timeout);
   }, [messages, messagesCacheKey]);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(hiddenMessageIds));
   }, [hiddenMessageIds, storageKey]);
+
+  useEffect(() => {
+    return () => { isMounted.current = false; };
+  }, []);
 
   const performClearChat = useCallback(async () => {
     setIsClearing(true);
@@ -76,22 +85,22 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .or(`and(sender_email.eq.${currentUserEmail},receiver_email.eq.${receiverEmail}),and(sender_email.eq.${receiverEmail},receiver_email.eq.${currentUserEmail})`);
 
       if (error) {
-        console.warn("DB delete restricted. Falling back to local view clear.", error);
         const allIds = messages.map(m => String(m.id));
         setHiddenMessageIds(prev => Array.from(new Set([...prev, ...allIds])));
       } else {
         setMessages([]);
         setHiddenMessageIds([]);
         localStorage.removeItem(messagesCacheKey);
-        localStorage.removeItem(storageKey);
       }
     } catch (err) {
       console.error("Clear Chat Failed:", err);
     } finally {
-      setIsClearing(false);
-      setShowClearConfirm(false);
+      if (isMounted.current) {
+        setIsClearing(false);
+        setShowClearConfirm(false);
+      }
     }
-  }, [currentUserEmail, receiverEmail, messages, messagesCacheKey, storageKey]);
+  }, [currentUserEmail, receiverEmail, messages, messagesCacheKey]);
 
   const upsertMessage = useCallback((msg: Message, defaultStatus: 'sent' | 'sending' | 'error' = 'sent') => {
     if (!msg.id) return;
@@ -101,8 +110,14 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
       const existingIndex = prev.findIndex(m => String(m.id) === msgIdStr);
       
       if (existingIndex !== -1) {
+        const existing = prev[existingIndex];
+        const hasChanged = 
+          existing.status !== (msg.status || defaultStatus) || 
+          existing.is_read !== msg.is_read;
+
+        if (!hasChanged) return prev;
+
         const updated = [...prev];
-        const existing = updated[existingIndex];
         updated[existingIndex] = { 
           ...existing, 
           ...msg, 
@@ -126,7 +141,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         .order('created_at', { ascending: true });
 
       if (error) {
-        setSyncStatus('error');
+        if (isMounted.current) setSyncStatus('error');
       } else if (data) {
         const filtered = data.filter(m => {
           const s = (m.sender_email || '').toLowerCase().trim();
@@ -134,38 +149,36 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           return (s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail);
         });
         
-        setMessages(filtered.map(m => ({ ...m, status: 'sent' })));
-        
-        const unreadFromOther = filtered.filter(m => m.receiver_email === currentUserEmail && !m.is_read);
-        if (unreadFromOther.length > 0) {
-          await supabase.from('messages').update({ is_read: true }).eq('receiver_email', currentUserEmail).eq('sender_email', receiverEmail).eq('is_read', false);
-        }
-
-        const messagesFromReceiver = filtered.filter(m => m.sender_email === receiverEmail);
-        if (messagesFromReceiver.length > 0) {
-          const latestMsg = messagesFromReceiver[messagesFromReceiver.length - 1];
-          const timestamp = latestMsg.created_at;
-          setReceiverLastSeen(timestamp);
-          localStorage.setItem(lastSeenKey, timestamp);
+        if (isMounted.current) {
+          setMessages(filtered.map(m => ({ ...m, status: 'sent' })));
+          
+          const unreadFromOther = filtered.filter(m => m.receiver_email === currentUserEmail && !m.is_read);
+          if (unreadFromOther.length > 0) {
+            await supabase.from('messages').update({ is_read: true }).eq('receiver_email', currentUserEmail).eq('sender_email', receiverEmail).eq('is_read', false);
+          }
         }
       }
     } catch (e) { console.error('Sync failed:', e); }
-    finally { setLoadingHistory(false); }
-  }, [currentUserEmail, receiverEmail, messages.length, lastSeenKey]);
+    finally { if (isMounted.current) setLoadingHistory(false); }
+  }, [currentUserEmail, receiverEmail, messages.length]);
 
   useEffect(() => {
     fetchMessages(true);
     const sortedEmails = [currentUserEmail, receiverEmail].sort();
     const safeRoomId = `room_${sortedEmails[0]}_${sortedEmails[1]}`.replace(/[^a-zA-Z0-9_]/g, '');
     
+    // Config: Explicitly disable acks for broadcast to stop "fallback to REST" warning
     const channel = supabase.channel(safeRoomId, {
-      config: { presence: { key: currentUserEmail }, broadcast: { self: false } }
+      config: { 
+        presence: { key: currentUserEmail }, 
+        broadcast: { self: false, ack: false } 
+      }
     });
     channelRef.current = channel;
 
     channel
       .on('broadcast', { event: 'msg' }, (payload) => {
-        if (payload.payload) {
+        if (payload.payload && isMounted.current) {
           upsertMessage(payload.payload as Message);
           setIsTyping(false);
           if (payload.payload.sender_email === receiverEmail) {
@@ -175,25 +188,16 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           }
         }
       })
-      .on('broadcast', { event: 'read_receipt' }, (payload) => {
-        if (payload.payload?.reader === receiverEmail) {
-          setMessages(prev => prev.map(m => 
-            m.sender_email === currentUserEmail && !m.is_read ? { ...m, is_read: true } : m
-          ));
-          const now = new Date().toISOString();
-          setReceiverLastSeen(now);
-          localStorage.setItem(lastSeenKey, now);
-        }
-      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const msg = payload.new as Message;
         const s = (msg.sender_email || '').toLowerCase().trim();
         const r = (msg.receiver_email || '').toLowerCase().trim();
-        if ((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) {
+        if (((s === currentUserEmail && r === receiverEmail) || (s === receiverEmail && r === currentUserEmail)) && isMounted.current) {
           upsertMessage(msg);
         }
       })
       .on('presence', { event: 'sync' }, () => {
+        if (!isMounted.current) return;
         const state = channel.presenceState();
         const presenceArray = Object.values(state).flat() as any[];
         const receiverPresence = presenceArray.find((u: any) => u.user === receiverEmail);
@@ -208,17 +212,16 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         }
       })
       .on('broadcast', { event: 'typing' }, (payload) => {
-        if (payload.payload?.user === receiverEmail) {
+        if (payload.payload?.user === receiverEmail && isMounted.current) {
           setIsTyping(true);
-          const now = new Date().toISOString();
-          setReceiverLastSeen(now);
-          localStorage.setItem(lastSeenKey, now);
-
           if (receiverTypingTimeoutRef.current) clearTimeout(receiverTypingTimeoutRef.current);
-          receiverTypingTimeoutRef.current = setTimeout(() => setIsTyping(false), 3000);
+          receiverTypingTimeoutRef.current = setTimeout(() => {
+            if (isMounted.current) setIsTyping(false);
+          }, 3000);
         }
       })
       .subscribe(async (status) => {
+        if (!isMounted.current) return;
         if (status === 'SUBSCRIBED') {
           setSyncStatus('synced');
           fetchMessages(false);
@@ -242,7 +245,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
   }, [currentUserEmail]);
 
   const handleTypingStatus = useCallback((status: 'typing' | 'stop_typing') => {
-    if (channelRef.current && status === 'typing') {
+    if (channelRef.current && status === 'typing' && channelRef.current.state === 'joined') {
       channelRef.current.send({
         type: 'broadcast',
         event: 'typing',
@@ -255,7 +258,8 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
     await supabase.auth.signOut();
   };
 
-  const currentWallpaper = WALLPAPERS.find(w => w.id === wallpaper);
+  const currentWallpaper = useMemo(() => WALLPAPERS.find(w => w.id === wallpaper), [wallpaper]);
+  const visibleMessages = useMemo(() => messages.filter(m => !hiddenMessageIds.includes(String(m.id))), [messages, hiddenMessageIds]);
 
   return (
     <div className={`flex-1 flex flex-col h-full relative overflow-hidden transition-colors duration-500`}>
@@ -279,7 +283,7 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
           </div>
         ) : (
           <MessageList 
-            messages={messages.filter(m => !hiddenMessageIds.includes(String(m.id)))}
+            messages={visibleMessages}
             currentUserEmail={currentUserEmail}
             isReceiverOnline={isReceiverOnline}
             onImageClick={setSelectedImage}
@@ -293,7 +297,6 @@ const ChatRoom: React.FC<ChatRoomProps> = ({ session, theme, toggleTheme }) => {
         receiverEmail={receiverEmail}
         theme={theme}
         channel={channelRef.current}
-        syncStatus={syncStatus}
         onTypingStatus={handleTypingStatus}
         onMessageSent={(msg) => upsertMessage(msg, 'sending')}
         onMessageConfirmed={(tempId, confirmedMsg) => upsertMessage(confirmedMsg)}

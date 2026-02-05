@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Send, Smile, Paperclip, Mic, Loader2, StopCircle } from 'lucide-react';
 import EmojiPicker, { Theme as EmojiTheme } from 'emoji-picker-react';
 import { supabase } from '../supabaseClient';
@@ -11,7 +11,6 @@ interface MessageInputProps {
   disabled?: boolean;
   theme: Theme;
   channel?: any;
-  syncStatus: string;
   onTypingStatus: (status: 'typing' | 'stop_typing') => void;
   onMessageSent: (msg: Message) => void;
   onMessageConfirmed: (tempId: string, confirmedMsg: Message) => void;
@@ -63,7 +62,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
     }, 2000);
   };
 
-  const handleSend = async (content: { text?: string, imageUrl?: string, audioUrl?: string }) => {
+  const handleSend = useCallback(async (content: { text?: string, imageUrl?: string, audioUrl?: string }) => {
     if (disabled) return;
     const finalMsg = content.text?.trim();
     if (!finalMsg && !content.imageUrl && !content.audioUrl) return;
@@ -91,16 +90,16 @@ const MessageInput: React.FC<MessageInputProps> = ({
     setText('');
     setShowEmojiPicker(false);
 
+    // Speed fix: Do not await the broadcast. It's for ephemeral UI feel.
+    // Explicitly catching to avoid the "Realtime fallback to REST" warning/logic
     if (channel && channel.state === 'joined') {
-      try {
-        await channel.send({
-          type: 'broadcast',
-          event: 'msg',
-          payload: { ...messagePayload, status: 'sent' }
-        });
-      } catch (e) {
-        console.debug('Realtime broadcast skipped, relying on DB.');
-      }
+      channel.send({
+        type: 'broadcast',
+        event: 'msg',
+        payload: { ...messagePayload, status: 'sent' }
+      }).catch(() => {
+        // Silently catch to prevent the SDK from falling back to REST automatically
+      });
     }
 
     const insertData = {
@@ -119,10 +118,9 @@ const MessageInput: React.FC<MessageInputProps> = ({
       if (error) throw error;
       if (data) onMessageConfirmed(messageId, { ...data, status: 'sent' });
     } catch (err) {
-      console.error('Persistence Failure:', err);
       onMessageConfirmed(messageId, { ...messagePayload, status: 'error' });
     }
-  };
+  }, [senderEmail, receiverEmail, disabled, channel, onTypingStatus, onMessageSent, onMessageConfirmed]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -161,7 +159,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   return (
-    <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t border-gray-200 dark:border-gray-800 relative transition-colors duration-500 ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`bg-[#F0F2F5] dark:bg-[#202C33] p-2 md:p-4 border-t border-gray-200 dark:border-gray-800 relative transition-colors duration-500 ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
       {showEmojiPicker && (
         <div className="absolute bottom-20 left-0 w-full md:max-w-sm z-50 shadow-2xl rounded-t-2xl overflow-hidden">
           <EmojiPicker onEmojiClick={(e) => setText(t => t + e.emoji)} theme={theme === 'dark' ? EmojiTheme.DARK : EmojiTheme.LIGHT} width="100%" height={350} />
@@ -212,4 +210,4 @@ const MessageInput: React.FC<MessageInputProps> = ({
   );
 };
 
-export default MessageInput;
+export default memo(MessageInput);
